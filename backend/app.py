@@ -3,8 +3,10 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import os
+import json 
 import httpx
 from datetime import datetime
+from sessions import redis_set, redis_get
 
 # Load environment variables
 load_dotenv()
@@ -44,15 +46,22 @@ async def login_with_google():
 @app.get("/auth/google/callback")
 async def google_callback(request: Request):
     code = request.query_params.get("code")
+    error = request.query_params.get("error")
     role = request.query_params.get("role", "admin")  # default to "admin"
 
-    if role not in ["admin", "superadmin"]:
-        raise HTTPException(status_code=400, detail="Invalid role selected.")
+    # Handle OAuth errors (like access_denied)
+    if error:
+        if error == "access_denied":
+            raise HTTPException(status_code=400, detail="User denied access to the application")
+        else:
+            raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
 
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code not found")
 
-    # Exchange code for access token
+    if role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=400, detail="Invalid role selected.")
+
     token_url = "https://oauth2.googleapis.com/token"
     token_data = {
         "code": code,
@@ -70,10 +79,12 @@ async def google_callback(request: Request):
             token_response.raise_for_status()
             token_json = token_response.json()
     except httpx.HTTPError as e:
+        print(f"Token request error: {e}")
         raise HTTPException(status_code=500, detail=f"Token request failed: {str(e)}")
 
     access_token = token_json.get("access_token")
     if not access_token:
+        print(f"Token response missing access_token: {token_json}")
         raise HTTPException(status_code=500, detail=f"Access token missing: {token_json}")
 
     # Get user info
@@ -86,6 +97,7 @@ async def google_callback(request: Request):
             userinfo_response.raise_for_status()
             user_info = userinfo_response.json()
     except httpx.HTTPError as e:
+        print(f"Userinfo request error: {e}")
         raise HTTPException(status_code=500, detail=f"Userinfo request failed: {str(e)}")
 
     # Create user data
@@ -97,7 +109,7 @@ async def google_callback(request: Request):
         "created_at": datetime.utcnow().isoformat()
     }
 
-    # Store or update user in DB
+    # Save/update user in MongoDB
     try:
         existing_user = await collection.find_one({"email": user_info["email"]})
         if not existing_user:
@@ -108,8 +120,29 @@ async def google_callback(request: Request):
                 {"$set": {"role": role}}  # optionally update role
             )
     except Exception as e:
+        print(f"MongoDB error: {e}")
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
 
-    # return JSONResponse(content=user_data)
-    return JSONResponse(content={key: value for key, value in user_data.items() if key != "_id"})
+    # Store user session in Redis (set expiry to 7 days = 604800 seconds)
+    session_data = {
+        "role": role,
+        "email": user_info["email"],
+        "name": user_info.get("name", ""),
+        "is_verified": user_info.get("verified_email", False)
+    }
+    
+    try:
+        # Convert session data to JSON string
+        session_json = json.dumps(session_data)
+        print(f"DEBUG: Storing session data for {user_info['email']}: {session_json}")
+        
+        # Store in Redis with 7 days expiry (7 * 24 * 60 * 60 = 604800 seconds)
+        await redis_set(user_info["email"], session_json, expiry=604800)
+        print(f"DEBUG: Successfully stored session in Redis for {user_info['email']}")
+        
+    except Exception as e:
+        print(f"Redis error details: {e}")
+        # Don't fail the entire request if Redis fails, just log it
+        print(f"WARNING: Failed to store session in Redis, but continuing with authentication")
 
+    return JSONResponse(content={key: value for key, value in user_data.items() if key != "_id"})
