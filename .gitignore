@@ -192,3 +192,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+
+# added manually
+backend/~$ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx
