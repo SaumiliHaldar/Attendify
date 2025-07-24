@@ -33,11 +33,115 @@ REDIRECT_URI = os.getenv("REDIRECT_URI")
 EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 
 # Routes
+@app.get("/healthz")
+async def health_check():
+    return {"message": "Attendify is active!", "status": "OK"}
+
+
+# Home Route 
 @app.get("/")
-async def root():
-    return {"message": "Attendify is active!"}
+async def home():
+    # Get today's date and current month
+    today = datetime.utcnow()
+    month = today.strftime("%Y-%m")
+    year, month_num = today.year, today.month
+
+    # Sundays
+    cal = calendar.Calendar()
+    sundays = [
+        datetime(year, month_num, day).strftime("%Y-%m-%d")
+        for week in cal.monthdayscalendar(year, month_num)
+        for i, day in enumerate(week)
+        if day != 0 and i == 6
+    ]
+
+    # Holidays from DB
+    start_date = datetime(year, month_num, 1).strftime("%Y-%m-%d")
+    end_day = calendar.monthrange(year, month_num)[1]
+    end_date = datetime(year, month_num, end_day).strftime("%Y-%m-%d")
+
+    holidays_cursor = db["holidays"].find({
+        "date": {"$gte": start_date, "$lte": end_date}
+    })
+
+    holidays = []
+    async for doc in holidays_cursor:
+        holidays.append({
+            "date": doc["date"],
+            "name": doc["name"]
+        })
+
+    # Attendance snapshot logic for home page
+    from collections import defaultdict
+
+    yesterday = today.date() - timedelta(days=1)
+    past_7_days = [today.date() - timedelta(days=i) for i in range(1, 8)]
+    attendance_collection = db["attendance"]
+
+    daily_summary = {
+        "date": str(yesterday),
+        "present_count": 0,
+        "total_marked": 0,
+        "breakdown": {}
+    }
+
+    weekly_summary = defaultdict(int)
+    total_days_counted = 0
+
+    for date in past_7_days:
+        date_str = date.strftime("%Y-%m-%d")
+        cursor = attendance_collection.find({f"records.{date_str}": {"$exists": True}})
+        day_present = 0
+        total = 0
+        temp_breakdown = defaultdict(int)
+
+        async for doc in cursor:
+            total += 1
+            status = doc["records"].get(date_str, "")
+            code = status.split("/")[0] if "/" in status else status
+            temp_breakdown[code] += 1
+            if code == "P":
+                day_present += 1
+
+        if total:
+            total_days_counted += 1
+            weekly_summary["present"] += day_present
+            weekly_summary["total"] += total
+            for k, v in temp_breakdown.items():
+                weekly_summary[k] += v
+
+        if date == yesterday:
+            daily_summary["present_count"] = day_present
+            daily_summary["total_marked"] = total
+            daily_summary["breakdown"] = dict(temp_breakdown)
+
+    weekly_avg_present = (
+        weekly_summary["present"] / total_days_counted if total_days_counted else 0
+    )
+    weekly_avg_total = (
+        weekly_summary["total"] / total_days_counted if total_days_counted else 0
+    )
+
+    return {
+        "today": today.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "month": month,
+        "sundays": sundays,
+        "holidays": holidays,
+        "attendance_snapshot": {
+            "yesterday": daily_summary,
+            "weekly_avg": {
+                "avg_present": round(weekly_avg_present, 2),
+                "avg_total_marked": round(weekly_avg_total, 2),
+                "days_counted": total_days_counted,
+                "breakdown": {k: weekly_summary[k] for k in weekly_summary if k not in ["present", "total"]}
+            }
+        },
+        "note": "This is a public dashboard. No login required."
+    }
 
 
+
+# Google Auth Signin/Signup
 @app.get("/auth/google")
 async def login_with_google():
     google_auth_url = (
@@ -370,6 +474,7 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
 
 
 # Attendance management
+# attendance = APIRouter()
 attendance = APIRouter()
 
 REGULAR_ATTENDANCE_LEGEND = {
@@ -401,7 +506,7 @@ APPRENTICE_ATTENDANCE_LEGEND = {
     "REL": "Released"
 }
 
-@attendance.post("/attendance")
+@attendance.post("attendance")
 async def mark_attendance(request: Request, authorization: str = Header(None)):
     body = await request.json()
 
@@ -520,47 +625,435 @@ async def setup_indexes():
     print("Indexes created")
 
 
-
-# Retrival of attendance data
+# Retrive attendance data
 @attendance.get("/attendance")
-async def get_attendance(emp_no: str = None, month: str = None, authorization: str = Header(None)):
+async def get_attendance(
+    request: Request,
+    emp_no: str = None,
+    month: str = None,
+    authorization: str = Header(None)
+):
+    """
+    Retrieve attendance records with optional filtering
+    
+    Query Parameters:
+    - emp_no: Filter by employee number (optional)
+    - month: Filter by month in YYYY-MM format (optional)
+    
+    Returns:
+    - If both emp_no and month provided: Single attendance record
+    - If only emp_no provided: All attendance records for that employee
+    - If only month provided: All attendance records for that month
+    - If neither provided: All attendance records (paginated)
+    """
+    
+    # Check authorization
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
-
-    # Validate month
-    if not month:
-        raise HTTPException(status_code=400, detail="Query parameter 'month' is required")
     
-    try:
-        datetime.strptime(month, "%Y-%m")
-    except:
-        raise HTTPException(status_code=400, detail="Month must be in YYYY-MM format")
-
-    # Redis session check
     session = await redis_get(authorization)
     if not session:
         raise HTTPException(status_code=403, detail="Session expired or invalid")
-
+    
+    # Parse session
     if isinstance(session, dict) and 'result' in session:
         user_data = json.loads(session['result'])
     elif isinstance(session, str):
         user_data = json.loads(session)
     else:
         raise HTTPException(status_code=403, detail="Invalid session format")
-
-    role = user_data.get("role", "admin")
-
-    query = {"month": month}
+    
+    # Build query filter
+    query_filter = {}
+    
     if emp_no:
-        query["emp_no"] = emp_no
+        # Validate employee exists
+        employee = await db["employees"].find_one({"emp_no": emp_no})
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        query_filter["emp_no"] = emp_no
+    
+    if month:
+        # Validate month format
+        try:
+            year, month_num = map(int, month.split("-"))
+            if not (1 <= month_num <= 12):
+                raise ValueError()
+        except:
+            raise HTTPException(status_code=400, detail="Month format should be YYYY-MM")
+        query_filter["month"] = month
+    
+    attendance_collection = db["attendance"]
+    
+    try:
+        # If both emp_no and month are provided, return single record
+        if emp_no and month:
+            record = await attendance_collection.find_one(query_filter)
+            if not record:
+                raise HTTPException(status_code=404, detail="Attendance record not found")
+            
+            # Remove MongoDB _id for JSON serialization
+            record.pop('_id', None)
+            
+            # Add summary statistics
+            summary = {}
+            for status in record.get("records", {}).values():
+                key = status.split("/")[0] if "/" in status else status
+                summary[key] = summary.get(key, 0) + 1
+            
+            record["summary"] = summary
+            record["total_days"] = len(record.get("records", {}))
+            
+            return {
+                "data": record,
+                "message": f"Attendance record for {record.get('emp_name', emp_no)} for {month}"
+            }
+        
+        # Otherwise return multiple records
+        cursor = attendance_collection.find(query_filter).sort([("month", -1), ("emp_no", 1)])
+        records = []
+        
+        async for record in cursor:
+            record.pop('_id', None)
+            
+            # Add summary for each record
+            summary = {}
+            for status in record.get("records", {}).values():
+                key = status.split("/")[0] if "/" in status else status
+                summary[key] = summary.get(key, 0) + 1
+            
+            record["summary"] = summary
+            record["total_days"] = len(record.get("records", {}))
+            records.append(record)
+        
+        # Determine response message
+        if emp_no:
+            message = f"All attendance records for employee {emp_no}"
+        elif month:
+            message = f"All attendance records for month {month}"
+        else:
+            message = "All attendance records"
+        
+        return {
+            "data": records,
+            "count": len(records),
+            "message": message,
+            "requested_by": user_data.get("name", user_data.get("email"))
+        }
+        
+    except Exception as e:
+        print(f"Error retrieving attendance: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving attendance: {str(e)}")
 
-    records_cursor = db["attendance"].find(query)
-    results = []
-    async for doc in records_cursor:
-        doc["_id"] = str(doc["_id"])
-        results.append(doc)
 
-    if not results:
-        raise HTTPException(status_code=404, detail="No attendance records found")
+@attendance.get("/attendance/summary")
+async def get_attendance_summary(
+    request: Request,
+    month: str,
+    authorization: str = Header(None)
+):
+    """
+    Get attendance summary for all employees in a specific month
+    
+    Parameters:
+    - month: Month in YYYY-MM format (required)
+    
+    Returns summary statistics for all employees
+    """
+    
+    # Check authorization
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired or invalid")
+    
+    # Validate month format
+    try:
+        year, month_num = map(int, month.split("-"))
+        if not (1 <= month_num <= 12):
+            raise ValueError()
+    except:
+        raise HTTPException(status_code=400, detail="Month format should be YYYY-MM")
+    
+    try:
+        attendance_collection = db["attendance"]
+        cursor = attendance_collection.find({"month": month}).sort("emp_no", 1)
+        
+        summary_data = []
+        total_employees = 0
+        overall_stats = {}
+        
+        async for record in cursor:
+            total_employees += 1
+            emp_summary = {
+                "emp_no": record.get("emp_no"),
+                "emp_name": record.get("emp_name"),
+                "type": record.get("type"),
+                "total_days": len(record.get("records", {})),
+                "breakdown": {}
+            }
+            
+            # Calculate breakdown for this employee
+            for status in record.get("records", {}).values():
+                key = status.split("/")[0] if "/" in status else status
+                emp_summary["breakdown"][key] = emp_summary["breakdown"].get(key, 0) + 1
+                overall_stats[key] = overall_stats.get(key, 0) + 1
+            
+            summary_data.append(emp_summary)
+        
+        return {
+            "month": month,
+            "total_employees": total_employees,
+            "employees": summary_data,
+            "overall_statistics": overall_stats,
+            "message": f"Attendance summary for {month}"
+        }
+        
+    except Exception as e:
+        print(f"Error generating attendance summary: {e}")
+        raise HTTPException(status_code=500, detail=f"Error generating summary: {str(e)}")
 
-    return {"count": len(results), "data": results}
+
+@attendance.get("/attendance/employee/{emp_no}")
+async def get_employee_attendance_history(
+    emp_no: str,
+    request: Request,
+    limit: int = 12,
+    authorization: str = Header(None)
+):
+    """
+    Get attendance history for a specific employee
+    
+    Parameters:
+    - emp_no: Employee number (required)
+    - limit: Number of months to retrieve (default: 12)
+    
+    Returns attendance history for the employee
+    """
+    
+    # Check authorization
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired or invalid")
+    
+    # Validate employee exists
+    employee = await db["employees"].find_one({"emp_no": emp_no})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    try:
+        attendance_collection = db["attendance"]
+        cursor = attendance_collection.find({"emp_no": emp_no}).sort("month", -1).limit(limit)
+        
+        history = []
+        async for record in cursor:
+            record.pop('_id', None)
+            
+            # Add summary
+            summary = {}
+            for status in record.get("records", {}).values():
+                key = status.split("/")[0] if "/" in status else status
+                summary[key] = summary.get(key, 0) + 1
+            
+            record["summary"] = summary
+            record["total_days"] = len(record.get("records", {}))
+            history.append(record)
+        
+        return {
+            "employee": {
+                "emp_no": employee["emp_no"],
+                "name": employee["name"],
+                "designation": employee["designation"],
+                "type": employee["type"]
+            },
+            "attendance_history": history,
+            "total_records": len(history),
+            "message": f"Attendance history for {employee['name']} ({emp_no})"
+        }
+        
+    except Exception as e:
+        print(f"Error retrieving employee attendance history: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving history: {str(e)}")
+
+
+# Add this endpoint for getting attendance legends
+@app.get("/attendance")
+async def get_attendance(
+    emp_no: str = None, 
+    month: str = None,
+    authorization: str = Header(None)
+):
+    # Check if user is logged in
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Please login first")
+    
+    # Verify session exists in Redis
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again")
+    
+    # Build search filter
+    filter_query = {}
+    
+    if emp_no:
+        # Check if employee exists
+        employee = await db["employees"].find_one({"emp_no": emp_no})
+        if not employee:
+            raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
+        filter_query["emp_no"] = emp_no
+    
+    if month:
+        # Validate month format (YYYY-MM)
+        try:
+            year, month_num = map(int, month.split("-"))
+            if not (1 <= month_num <= 12):
+                raise ValueError()
+        except:
+            raise HTTPException(status_code=400, detail="Month should be in YYYY-MM format")
+        filter_query["month"] = month
+    
+    # Get attendance records from database
+    attendance_records = []
+    cursor = db["attendance"].find(filter_query).sort("month", -1)
+    
+    async for record in cursor:
+        # Remove MongoDB _id field
+        record.pop('_id', None)
+        
+        # Calculate summary (count of each attendance type)
+        summary = {}
+        for attendance_code in record.get("records", {}).values():
+            # Handle codes like "P/8" - take only the first part
+            code = attendance_code.split("/")[0] if "/" in attendance_code else attendance_code
+            summary[code] = summary.get(code, 0) + 1
+        
+        # Add summary to record
+        record["summary"] = summary
+        record["total_days"] = len(record.get("records", {}))
+        
+        attendance_records.append(record)
+    
+    # Return results
+    if not attendance_records:
+        return {
+            "message": "No attendance records found",
+            "data": [],
+            "count": 0
+        }
+    
+    return {
+        "message": "Attendance records retrieved successfully",
+        "data": attendance_records,
+        "count": len(attendance_records)
+    }
+
+
+# Simple endpoint to get attendance summary for one month
+@app.get("/attendance/monthly-summary")
+async def get_monthly_summary(
+    month: str,
+    authorization: str = Header(None)
+):
+    # Check authentication
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Please login first")
+    
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+    
+    # Validate month
+    try:
+        year, month_num = map(int, month.split("-"))
+        if not (1 <= month_num <= 12):
+            raise ValueError()
+    except:
+        raise HTTPException(status_code=400, detail="Month should be in YYYY-MM format")
+    
+    # Get all attendance for the month
+    records = []
+    cursor = db["attendance"].find({"month": month}).sort("emp_no", 1)
+    
+    async for record in cursor:
+        # Calculate summary for each employee
+        summary = {}
+        for code in record.get("records", {}).values():
+            clean_code = code.split("/")[0] if "/" in code else code
+            summary[clean_code] = summary.get(clean_code, 0) + 1
+        
+        records.append({
+            "emp_no": record.get("emp_no"),
+            "name": record.get("emp_name"),
+            "type": record.get("type"),
+            "total_days": len(record.get("records", {})),
+            "breakdown": summary
+        })
+    
+    if not records:
+        return {
+            "message": f"No attendance data found for {month}",
+            "month": month,
+            "employees": [],
+            "total_employees": 0
+        }
+    
+    return {
+        "message": f"Monthly summary for {month}",
+        "month": month,
+        "employees": records,
+        "total_employees": len(records)
+    }
+
+
+# Simple endpoint to get one employee's history
+@app.get("/attendance/employee/{emp_no}")
+async def get_employee_history(
+    emp_no: str,
+    authorization: str = Header(None)
+):
+    # Check authentication
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Please login first")
+    
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+    
+    # Check if employee exists
+    employee = await db["employees"].find_one({"emp_no": emp_no})
+    if not employee:
+        raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
+    
+    # Get all attendance records for this employee
+    history = []
+    cursor = db["attendance"].find({"emp_no": emp_no}).sort("month", -1)
+    
+    async for record in cursor:
+        record.pop('_id', None)
+        
+        # Add summary
+        summary = {}
+        for code in record.get("records", {}).values():
+            clean_code = code.split("/")[0] if "/" in code else code
+            summary[clean_code] = summary.get(clean_code, 0) + 1
+        
+        record["summary"] = summary
+        history.append(record)
+    
+    return {
+        "message": f"Attendance history for {employee['name']} ({emp_no})",
+        "employee": {
+            "emp_no": emp_no,
+            "name": employee["name"],
+            "designation": employee["designation"],
+            "type": employee["type"]
+        },
+        "history": history,
+        "total_months": len(history)
+    }
+
