@@ -7,6 +7,7 @@ import json
 import httpx
 from datetime import datetime
 from sessions import redis_set, redis_get
+import pandas as pd
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +23,9 @@ collection = db["users"]
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
+
+# Employee sheet
+EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 
 # Routes
 @app.get("/")
@@ -146,3 +150,108 @@ async def google_callback(request: Request):
         print(f"WARNING: Failed to store session in Redis, but continuing with authentication")
 
     return JSONResponse(content={key: value for key, value in user_data.items() if key != "_id"})
+
+# Load employees
+@app.post("/employees")
+async def load_employees():
+    EMPLOYEE_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
+    regular_sheets = [
+        "ATTENDANCE_SSEE_SW_KGP_I", 
+        "ATTENDANCE_SSEE_SW_KGP_II", 
+        "ATTENDANCE_SSEE_SW_KGP_III"
+    ]
+    apprentice_sheet = "APPRENTICE ATTENDANCE"
+
+    all_employees = []
+
+    # Process regular employees
+    for sheet in regular_sheets:
+        try:
+            df = pd.read_excel(EMPLOYEE_SHEET, sheet_name=sheet, skiprows=6)
+            df.rename(columns={
+                "S. NO.": "S_No",
+                "NAME": "Name",
+                "DESIGNATION": "Designation",
+                "EMPLOYEE NO.": "Employee_No"
+            }, inplace=True)
+            df = df.dropna(subset=["Employee_No"])
+
+            for _, row in df.iterrows():
+                all_employees.append({
+                    "emp_no": str(row["Employee_No"]).strip(),
+                    "name": str(row["Name"]).strip(),
+                    "designation": str(row["Designation"]).strip(),
+                    "type": "regular"
+                })
+        except Exception as e:
+            print(f"Error reading sheet {sheet}: {e}")
+            continue
+
+    # Process apprentice employees
+    try:
+        df = pd.read_excel(EMPLOYEE_SHEET, sheet_name=apprentice_sheet, skiprows=8)
+        df.rename(columns={
+            "S. NO.": "S_No",
+            "NAME": "Name",
+            "DESIGNATION": "Designation",
+            "EMPLOYEE NO.": "Employee_No"
+        }, inplace=True)
+        df = df.dropna(subset=["Employee_No"])
+
+        for _, row in df.iterrows():
+            all_employees.append({
+                "emp_no": str(row["Employee_No"]).strip(),
+                "name": str(row["Name"]).strip(),
+                "designation": str(row["Designation"]).strip(),
+                "type": "apprentice"
+            })
+    except Exception as e:
+        print(f"Error reading apprentice sheet: {e}")
+
+    if not all_employees:
+        raise HTTPException(status_code=400, detail="No employee data found.")
+
+    emp_collection = db["employees"]
+    await emp_collection.delete_many({})
+    await emp_collection.insert_many(all_employees)
+
+    return {"message": f"{len(all_employees)} employee details loaded."}
+
+# Load holidays
+@app.post("/holidays")
+async def load_holidays():
+    HOLIDAY_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
+    # Read the Excel sheet, using the second row (index 1) as header.
+    df = pd.read_excel(HOLIDAY_SHEET, sheet_name="HOLIDAYS", header=1) 
+    print("DEBUG - Holidays Columns:", df.columns.tolist())
+
+    holidays = []
+    # Filter out rows where 'Name of the Occasion' or 'Date' are NaN after parsing
+    df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
+
+    for _, row in df_filtered.iterrows():
+        # Access by actual column names now
+        date_raw = row.get("Date")
+        name = row.get("Name of the Occasion")
+        
+        if pd.notna(date_raw) and name:
+            try:
+                # dayfirst=True handles DD.MM.YYYY format
+                date = pd.to_datetime(str(date_raw).strip(), dayfirst=True, errors="coerce")
+                if pd.notna(date):
+                    holidays.append({
+                        "date": date.strftime('%Y-%m-%d'),
+                        "name": str(name).strip()
+                    })
+            except Exception as e:
+                # Log the error if a date conversion fails for a row
+                print(f"Error processing holiday row: {row.to_dict()} - {e}")
+                continue
+
+    if not holidays:
+        raise HTTPException(status_code=400, detail="No holidays found in the Excel sheet")
+
+    hol_collection = db["holidays"]
+    await hol_collection.delete_many({})
+    await hol_collection.insert_many(holidays)
+    return {"message": f"{len(holidays)} holidays inserted."}
