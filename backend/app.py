@@ -154,21 +154,50 @@ async def google_callback(request: Request):
 
 # Load employees
 @app.post("/employees")
-async def load_employees():
-    EMPLOYEE_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
-    regular_sheets = [
-        "ATTENDANCE_SSEE_SW_KGP_I", 
-        "ATTENDANCE_SSEE_SW_KGP_II", 
-        "ATTENDANCE_SSEE_SW_KGP_III"
-    ]
-    apprentice_sheet = "APPRENTICE ATTENDANCE"
+async def upload_employees(file: UploadFile = File(...)):
+    import tempfile
+
+    suffix = os.path.splitext(file.filename)[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        temp_path = tmp.name
 
     all_employees = []
+    try:
+        regular_sheets = [
+            "ATTENDANCE_SSEE_SW_KGP_I", 
+            "ATTENDANCE_SSEE_SW_KGP_II", 
+            "ATTENDANCE_SSEE_SW_KGP_III"
+        ]
+        apprentice_sheet = "APPRENTICE ATTENDANCE"
 
-    # Process regular employees
-    for sheet in regular_sheets:
+        # Regular Employees
+        for sheet in regular_sheets:
+            try:
+                df = pd.read_excel(temp_path, sheet_name=sheet, skiprows=6)
+                df.rename(columns={
+                    "S. NO.": "S_No",
+                    "NAME": "Name",
+                    "DESIGNATION": "Designation",
+                    "EMPLOYEE NO.": "Employee_No"
+                }, inplace=True)
+                df = df.dropna(subset=["Employee_No"])
+
+                for _, row in df.iterrows():
+                    all_employees.append({
+                        "emp_no": str(row["Employee_No"]).strip(),
+                        "name": str(row["Name"]).strip(),
+                        "designation": str(row["Designation"]).strip(),
+                        "type": "regular"
+                    })
+            except Exception as e:
+                print(f"Error reading regular sheet {sheet}: {e}")
+                continue
+
+        # Apprentice Employees
         try:
-            df = pd.read_excel(EMPLOYEE_SHEET, sheet_name=sheet, skiprows=6)
+            df = pd.read_excel(temp_path, sheet_name=apprentice_sheet, skiprows=8)
             df.rename(columns={
                 "S. NO.": "S_No",
                 "NAME": "Name",
@@ -182,82 +211,28 @@ async def load_employees():
                     "emp_no": str(row["Employee_No"]).strip(),
                     "name": str(row["Name"]).strip(),
                     "designation": str(row["Designation"]).strip(),
-                    "type": "regular"
+                    "type": "apprentice"
                 })
         except Exception as e:
-            print(f"Error reading sheet {sheet}: {e}")
-            continue
+            print(f"Error reading apprentice sheet: {e}")
 
-    # Process apprentice employees
-    try:
-        df = pd.read_excel(EMPLOYEE_SHEET, sheet_name=apprentice_sheet, skiprows=8)
-        df.rename(columns={
-            "S. NO.": "S_No",
-            "NAME": "Name",
-            "DESIGNATION": "Designation",
-            "EMPLOYEE NO.": "Employee_No"
-        }, inplace=True)
-        df = df.dropna(subset=["Employee_No"])
+        if not all_employees:
+            raise HTTPException(status_code=400, detail="No employee data found.")
 
-        for _, row in df.iterrows():
-            all_employees.append({
-                "emp_no": str(row["Employee_No"]).strip(),
-                "name": str(row["Name"]).strip(),
-                "designation": str(row["Designation"]).strip(),
-                "type": "apprentice"
-            })
+        emp_collection = db["employees"]
+        await emp_collection.delete_many({})
+        await emp_collection.insert_many(all_employees)
+
+        return {"message": f"{len(all_employees)} employees uploaded successfully."}
+
     except Exception as e:
-        print(f"Error reading apprentice sheet: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing employees: {e}")
 
-    if not all_employees:
-        raise HTTPException(status_code=400, detail="No employee data found.")
+    finally:
+        os.remove(temp_path)
 
-    emp_collection = db["employees"]
-    await emp_collection.delete_many({})
-    await emp_collection.insert_many(all_employees)
-
-    return {"message": f"{len(all_employees)} employee details loaded."}
 
 # Load holidays
-# @app.post("/holidays")
-# async def load_holidays():
-#     HOLIDAY_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
-#     # Read the Excel sheet, using the second row (index 1) as header.
-#     df = pd.read_excel(HOLIDAY_SHEET, sheet_name="HOLIDAYS", header=1) 
-#     print("DEBUG - Holidays Columns:", df.columns.tolist())
-
-#     holidays = []
-#     # Filter out rows where 'Name of the Occasion' or 'Date' are NaN after parsing
-#     df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
-
-#     for _, row in df_filtered.iterrows():
-#         # Access by actual column names now
-#         date_raw = row.get("Date")
-#         name = row.get("Name of the Occasion")
-        
-#         if pd.notna(date_raw) and name:
-#             try:
-#                 # dayfirst=True handles DD.MM.YYYY format
-#                 date = pd.to_datetime(str(date_raw).strip(), dayfirst=True, errors="coerce")
-#                 if pd.notna(date):
-#                     holidays.append({
-#                         "date": date.strftime('%Y-%m-%d'),
-#                         "name": str(name).strip()
-#                     })
-#             except Exception as e:
-#                 # Log the error if a date conversion fails for a row
-#                 print(f"Error processing holiday row: {row.to_dict()} - {e}")
-#                 continue
-
-#     if not holidays:
-#         raise HTTPException(status_code=400, detail="No holidays found in the Excel sheet")
-
-#     hol_collection = db["holidays"]
-#     await hol_collection.delete_many({})
-#     await hol_collection.insert_many(holidays)
-#     return {"message": f"{len(holidays)} holidays inserted."}
-
-
 @app.post("/holidays")
 async def upload_holidays(file: UploadFile = File(...)):
     import tempfile
