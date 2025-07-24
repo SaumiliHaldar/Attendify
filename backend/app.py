@@ -8,6 +8,7 @@ import httpx
 from datetime import datetime
 from sessions import redis_set, redis_get
 import pandas as pd
+from fastapi import UploadFile, File
 
 # Load environment variables
 load_dotenv()
@@ -218,40 +219,83 @@ async def load_employees():
     return {"message": f"{len(all_employees)} employee details loaded."}
 
 # Load holidays
+# @app.post("/holidays")
+# async def load_holidays():
+#     HOLIDAY_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
+#     # Read the Excel sheet, using the second row (index 1) as header.
+#     df = pd.read_excel(HOLIDAY_SHEET, sheet_name="HOLIDAYS", header=1) 
+#     print("DEBUG - Holidays Columns:", df.columns.tolist())
+
+#     holidays = []
+#     # Filter out rows where 'Name of the Occasion' or 'Date' are NaN after parsing
+#     df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
+
+#     for _, row in df_filtered.iterrows():
+#         # Access by actual column names now
+#         date_raw = row.get("Date")
+#         name = row.get("Name of the Occasion")
+        
+#         if pd.notna(date_raw) and name:
+#             try:
+#                 # dayfirst=True handles DD.MM.YYYY format
+#                 date = pd.to_datetime(str(date_raw).strip(), dayfirst=True, errors="coerce")
+#                 if pd.notna(date):
+#                     holidays.append({
+#                         "date": date.strftime('%Y-%m-%d'),
+#                         "name": str(name).strip()
+#                     })
+#             except Exception as e:
+#                 # Log the error if a date conversion fails for a row
+#                 print(f"Error processing holiday row: {row.to_dict()} - {e}")
+#                 continue
+
+#     if not holidays:
+#         raise HTTPException(status_code=400, detail="No holidays found in the Excel sheet")
+
+#     hol_collection = db["holidays"]
+#     await hol_collection.delete_many({})
+#     await hol_collection.insert_many(holidays)
+#     return {"message": f"{len(holidays)} holidays inserted."}
+
+
 @app.post("/holidays")
-async def load_holidays():
-    HOLIDAY_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
-    # Read the Excel sheet, using the second row (index 1) as header.
-    df = pd.read_excel(HOLIDAY_SHEET, sheet_name="HOLIDAYS", header=1) 
-    print("DEBUG - Holidays Columns:", df.columns.tolist())
+async def upload_holidays(file: UploadFile = File(...)):
+    import tempfile
+
+    # Save the uploaded Excel file temporarily
+    suffix = os.path.splitext(file.filename)[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        temp_path = tmp.name
 
     holidays = []
-    # Filter out rows where 'Name of the Occasion' or 'Date' are NaN after parsing
-    df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
+    try:
+        # Read HOLIDAYS sheet using second row as header
+        df = pd.read_excel(temp_path, sheet_name="HOLIDAYS", header=1)
+        df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
 
-    for _, row in df_filtered.iterrows():
-        # Access by actual column names now
-        date_raw = row.get("Date")
-        name = row.get("Name of the Occasion")
-        
-        if pd.notna(date_raw) and name:
-            try:
-                # dayfirst=True handles DD.MM.YYYY format
-                date = pd.to_datetime(str(date_raw).strip(), dayfirst=True, errors="coerce")
-                if pd.notna(date):
-                    holidays.append({
-                        "date": date.strftime('%Y-%m-%d'),
-                        "name": str(name).strip()
-                    })
-            except Exception as e:
-                # Log the error if a date conversion fails for a row
-                print(f"Error processing holiday row: {row.to_dict()} - {e}")
-                continue
+        for _, row in df_filtered.iterrows():
+            raw_date = str(row["Date"]).strip()
+            name = str(row["Name of the Occasion"]).strip()
+            date = pd.to_datetime(raw_date, dayfirst=True, errors="coerce")
+            if pd.notna(date):
+                holidays.append({
+                    "date": date.strftime("%Y-%m-%d"),
+                    "name": name
+                })
 
-    if not holidays:
-        raise HTTPException(status_code=400, detail="No holidays found in the Excel sheet")
+        if not holidays:
+            raise HTTPException(status_code=400, detail="No valid holidays found.")
 
-    hol_collection = db["holidays"]
-    await hol_collection.delete_many({})
-    await hol_collection.insert_many(holidays)
-    return {"message": f"{len(holidays)} holidays inserted."}
+        hol_collection = db["holidays"]
+        await hol_collection.delete_many({})
+        await hol_collection.insert_many(holidays)
+
+        return {"message": f"{len(holidays)} holidays uploaded successfully."}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing holidays: {e}")
+    
+    finally:
+        os.remove(temp_path)
