@@ -13,7 +13,7 @@ app = FastAPI()
 
 # MongoDB setup
 MONGO_URI = os.getenv("MONGO_URI")
-client = AsyncIOMotorClient(MONGO_URI)
+client = AsyncIOMotorClient(MONGO_URI, tls=True)
 db = client["Attendify"]
 collection = db["users"]
 
