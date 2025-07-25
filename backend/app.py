@@ -474,7 +474,6 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
 
 
 # Attendance management
-# attendance = APIRouter()
 attendance = APIRouter()
 
 REGULAR_ATTENDANCE_LEGEND = {
@@ -623,6 +622,19 @@ async def setup_indexes():
     await db["employees"].create_index("emp_no")
     await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
     print("Indexes created")
+
+
+# Attendance legend for frontend access
+@app.get("/attendance/legend")
+async def get_attendance_legend():
+    """
+    Returns the legend of attendance codes for regular and apprentice employees
+    """
+    return {
+        "regular": REGULAR_ATTENDANCE_LEGEND,
+        "apprentice": APPRENTICE_ATTENDANCE_LEGEND,
+        "message": "Attendance code legends for reference"
+    }
 
 
 # Retrive attendance data
