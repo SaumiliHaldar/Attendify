@@ -12,6 +12,10 @@ from fastapi import UploadFile, File, Header
 from datetime import datetime, timedelta
 from typing import Dict
 import calendar
+from fastapi.responses import StreamingResponse
+from io import BytesIO
+from excelmaker import create_attendance_excel
+
 
 
 # Load environment variables
@@ -816,3 +820,13 @@ async def get_employee_history(
         "total_months": len(history)
     }
 
+# Export attendance records
+@app.get("/export_regular")
+async def export_regular(month: str = "2025-07", authorization: str = Header(None)):
+    stream = await create_attendance_excel(db, "regular", month)
+    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename=regular_attendance_{month}.xlsx"})
+
+@app.get("/export_apprentice")
+async def export_apprentice(month: str = "2025-07", authorization: str = Header(None)):
+    stream = await create_attendance_excel(db, "apprentice", month)
+    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename=apprentice_attendance_{month}.xlsx"})
