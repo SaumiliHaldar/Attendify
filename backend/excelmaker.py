@@ -37,14 +37,15 @@ APPRENTICE_LEGEND = {
 
 # Styles
 bold_center = Font(bold=True)
-center = Alignment(horizontal="center", vertical="center")
+header_font = Font(bold=True, size=12)
+title_font = Font(bold=True, size=14)
+center = Alignment(horizontal="center", vertical="center", wrap_text=True)
 border = Border(
     left=Side(style='thin'), right=Side(style='thin'),
     top=Side(style='thin'), bottom=Side(style='thin')
 )
 sunday_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-holiday_fill = PatternFill(fill_type="darkDown", fgColor="FF9999")
-
+holiday_fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")
 
 async def create_attendance_excel(db, employee_type: str, month: str):
     wb = Workbook()
@@ -77,22 +78,47 @@ async def create_attendance_excel(db, employee_type: str, month: str):
     att_cursor = db["attendance"].find({"type": employee_type, "month": month})
     attendance = {doc["emp_no"]: doc["records"] async for doc in att_cursor}
 
-    # Title
+    # ==============================
+    # HEADER SECTION (Fixed Layout)
+    # ==============================
     ws.merge_cells("A1:AZ1")
-    ws["A1"] = f"ATTENDANCE SHEET / MUSTER ROLL OF SSEE/SW/KGP"
-    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"] = "SOUTH EASTERN RAILWAY"
+    ws["A1"].font = title_font
     ws["A1"].alignment = center
 
+    ws.merge_cells("A2:AZ2")
+    ws["A2"] = "ELECTRICAL DEPARTMENT"
+    ws["A2"].font = header_font
+    ws["A2"].alignment = center
+
+    ws.merge_cells("A3:AZ3")
+    ws["A3"] = "OFFICE OF THE SENIOR SECTION ENGINEER (ELECT.)/SW/KGP"
+    ws["A3"].font = header_font
+    ws["A3"].alignment = center
+
+    ws.merge_cells("A4:AZ4")
+    ws["A4"] = f"ATTENDANCE SHEET / MUSTER ROLL ({month})"
+    ws["A4"].font = title_font
+    ws["A4"].alignment = center
+
+    # Leave a gap row
+    ws.append([])
+
+    # ==============================
+    # TABLE HEADER
+    # ==============================
     ws.append(["S.No", "NAME", "DESIGNATION", "EMPLOYEE NO."] + [d.strftime("%d/%m") for d in dates])
-    for cell in ws[2]:
+    for cell in ws[6]:  # row 6 = header row
         cell.font = bold_center
         cell.alignment = center
         cell.border = border
 
-    # Fill employee rows
-    row = 3
+    # ==============================
+    # EMPLOYEE ROWS
+    # ==============================
+    row = 7
     for idx, emp in enumerate(employees, start=1):
-        ws.cell(row=row, column=1, value=idx)
+        ws.cell(row=row, column=1, value=idx).alignment = center
         ws.cell(row=row, column=2, value=emp.get("name", ""))
         ws.cell(row=row, column=3, value=emp.get("designation", ""))
         ws.cell(row=row, column=4, value=emp.get("emp_no", ""))
@@ -104,15 +130,15 @@ async def create_attendance_excel(db, employee_type: str, month: str):
             cell = ws.cell(row=row, column=col, value=code)
             cell.alignment = center
             cell.border = border
-
             if d.weekday() == 6:
                 cell.fill = sunday_fill
             if date_str in holidays:
                 cell.fill = holiday_fill
-
         row += 1
 
-    # Footer LEGEND
+    # ==============================
+    # FOOTER (LEGENDS + SIGNATURES)
+    # ==============================
     row += 2
     ws.cell(row=row, column=1, value="LEGENDS:").font = bold_center
     row += 1
@@ -121,27 +147,33 @@ async def create_attendance_excel(db, employee_type: str, month: str):
         row += 1
 
     row += 1
-    ws.cell(row=row, column=1, value="Note: The above abstract attendance particulars are taken from attendance register for")
+    ws.cell(row=row, column=1,
+            value="Note: The above abstract attendance particulars are taken from attendance register.").alignment = center
     row += 1
-    ws.cell(row=row, column=1, value="supervisor and staff of O/O SSEE/SW/KGP, due to some unavoidable circumstances the manual entry had been done by the signatory.")
+    ws.cell(row=row, column=1,
+            value="Due to some unavoidable circumstances manual entry had been done by the signatory.").alignment = center
 
-    row += 2
+    row += 3
     ws.cell(row=row, column=1, value="JE: ______________   SSEE: ______________   SSE/INCHARGE: ______________")
 
-    # Apply border to all cells
+    # ==============================
+    # STYLING + COLUMN WIDTHS
+    # ==============================
     for r in ws.iter_rows():
         for c in r:
             c.border = border
 
-    # Auto-width columns (skip merged cells)
-    for col in ws.columns:
-        first_cell = col[0]
-        if isinstance(first_cell, MergedCell):
-            continue
-        max_length = max((len(str(cell.value)) if cell.value else 0) for cell in col)
-        ws.column_dimensions[first_cell.column_letter].width = max(12, min(max_length + 2, 25))
+    # Fixed column widths for neatness
+    ws.column_dimensions["A"].width = 6   # S.No
+    ws.column_dimensions["B"].width = 28  # Name
+    ws.column_dimensions["C"].width = 20  # Designation
+    ws.column_dimensions["D"].width = 15  # Emp No
+    for col in range(5, 5 + len(dates)):
+        ws.column_dimensions[ws.cell(6, col).column_letter].width = 5
 
-    # Finalize output
+    # ==============================
+    # FINAL OUTPUT
+    # ==============================
     output = BytesIO()
     wb.save(output)
     output.seek(0)
