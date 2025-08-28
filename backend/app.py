@@ -1,22 +1,20 @@
 from fastapi import FastAPI, Request, HTTPException, APIRouter
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import os
-import json 
+import json
 import httpx
-from datetime import datetime
-from sessions import redis_set, redis_get, redis_delete
-import pandas as pd
-from fastapi import UploadFile, File, Header
+import pytz
 from datetime import datetime, timedelta
 from typing import Dict
 import calendar
-from fastapi.responses import StreamingResponse
 from io import BytesIO
 from excelmaker import create_attendance_excel
+from sessions import redis_set, redis_get, redis_delete
+import pandas as pd
+from fastapi import UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
-
 
 
 # Load environment variables
@@ -30,14 +28,18 @@ client = AsyncIOMotorClient(MONGO_URI, tls=True)
 db = client["Attendify"]
 collection = db["users"]
 
+# Google Auth
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 
+# Timezone setup for Kolkata
+kolkata_tz = pytz.timezone("Asia/Kolkata")
+
 # App CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,24 +54,24 @@ async def health_check():
     return {"message": "Attendify is active!", "status": "OK"}
 
 
-# Home Route 
+# Home Route
 @app.get("/")
 async def home():
-    # Get today's date and current month
-    today = datetime.utcnow()
+    # Get today's date and current month using Kolkata timezone
+    today = datetime.now(kolkata_tz)
     month = today.strftime("%Y-%m")
     year, month_num = today.year, today.month
 
     # Sundays
     cal = calendar.Calendar()
     sundays = [
-        datetime(year, month_num, day).strftime("%Y-%m-%d")
+        datetime(year, month_num, day, tzinfo=kolkata_tz).strftime("%d-%m-%Y")
         for week in cal.monthdayscalendar(year, month_num)
         for i, day in enumerate(week)
         if day != 0 and i == 6
     ]
 
-    # Holidays from DB
+    # Holidays from DB (store in YYYY-MM-DD for sorting, format for display)
     start_date = datetime(year, month_num, 1).strftime("%Y-%m-%d")
     end_day = calendar.monthrange(year, month_num)[1]
     end_date = datetime(year, month_num, end_day).strftime("%Y-%m-%d")
@@ -81,7 +83,7 @@ async def home():
     holidays = []
     async for doc in holidays_cursor:
         holidays.append({
-            "date": doc["date"],
+            "date": datetime.strptime(doc["date"], "%Y-%m-%d").strftime("%d-%m-%Y"),
             "name": doc["name"]
         })
 
@@ -93,7 +95,7 @@ async def home():
     attendance_collection = db["attendance"]
 
     daily_summary = {
-        "date": str(yesterday),
+        "date": yesterday.strftime("%d-%m-%Y"),
         "present_count": 0,
         "total_marked": 0,
         "breakdown": {}
@@ -103,7 +105,7 @@ async def home():
     total_days_counted = 0
 
     for date in past_7_days:
-        date_str = date.strftime("%Y-%m-%d")
+        date_str = date.strftime("%d-%m-%Y")
         cursor = attendance_collection.find({f"records.{date_str}": {"$exists": True}})
         day_present = 0
         total = 0
@@ -137,7 +139,7 @@ async def home():
     )
 
     return {
-        "today": today.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "today": today.strftime("%d-%m-%Y %H:%M:%S %Z"),
         "month": month,
         "sundays": sundays,
         "holidays": holidays,
@@ -152,7 +154,6 @@ async def home():
         },
         "note": "This is a public dashboard. No login required."
     }
-
 
 
 # Google Auth Signin/Signup
@@ -175,7 +176,6 @@ async def google_callback(request: Request):
     code = request.query_params.get("code")
     error = request.query_params.get("error")
 
-
     # Handle OAuth errors (like access_denied)
     if error:
         if error == "access_denied":
@@ -186,7 +186,6 @@ async def google_callback(request: Request):
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code not found")
 
-    
     token_url = "https://oauth2.googleapis.com/token"
     token_data = {
         "code": code,
@@ -221,7 +220,7 @@ async def google_callback(request: Request):
             )
             userinfo_response.raise_for_status()
             user_info = userinfo_response.json()
-            
+
             # Define trusted superadmins
             SUPERADMINS = ["haldar.saumili843@gmail.com", "haldar.sk2006@gmail.com"]
             user_email = user_info["email"]
@@ -236,7 +235,7 @@ async def google_callback(request: Request):
         "is_verified": user_info.get("verified_email", False),
         "name": user_info.get("name", ""),
         "role": role,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.now(kolkata_tz).isoformat()
     }
 
     # Save user details in MongoDB
@@ -256,16 +255,16 @@ async def google_callback(request: Request):
         "name": user_info.get("name", ""),
         "is_verified": user_info.get("verified_email", False)
     }
-    
+
     try:
         # Convert session data to JSON string
         session_json = json.dumps(session_data)
         print(f"DEBUG: Storing session data for {user_info['email']}: {session_json}")
-        
+
         # Store in Redis with 7 days expiry (7 * 24 * 60 * 60 = 604800 seconds)
         await redis_set(user_info["email"], session_json, expiry=604800)
         print(f"DEBUG: Successfully stored session in Redis for {user_info['email']}")
-        
+
     except Exception as e:
         print(f"Redis error details: {e}")
         # Don't fail the entire request if Redis fails, just log it
@@ -287,10 +286,11 @@ async def logout(request: Request):
         await redis_delete(email)
 
         return JSONResponse(content={"message": f"User {email} logged out successfully."})
-    
+
     except Exception as e:
         print(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail="Logout failed")
+
 
 # Load employees
 @app.post("/employees")
@@ -306,8 +306,8 @@ async def upload_employees(file: UploadFile = File(...)):
     all_employees = []
     try:
         regular_sheets = [
-            "ATTENDANCE_SSEE_SW_KGP_I", 
-            "ATTENDANCE_SSEE_SW_KGP_II", 
+            "ATTENDANCE_SSEE_SW_KGP_I",
+            "ATTENDANCE_SSEE_SW_KGP_II",
             "ATTENDANCE_SSEE_SW_KGP_III"
         ]
         apprentice_sheet = "APPRENTICE ATTENDANCE"
@@ -335,7 +335,7 @@ async def upload_employees(file: UploadFile = File(...)):
 
                 for _, row in df.iterrows():
                     all_employees.append({
-                        "emp_no": clean_emp_no(row["Employee_No"]),  # Fixed: clean the employee number
+                        "emp_no": clean_emp_no(row["Employee_No"]),
                         "name": str(row["Name"]).strip(),
                         "designation": str(row["Designation"]).strip(),
                         "type": "regular"
@@ -357,7 +357,7 @@ async def upload_employees(file: UploadFile = File(...)):
 
             for _, row in df.iterrows():
                 all_employees.append({
-                    "emp_no": clean_emp_no(row["Employee_No"]),  # Fixed: clean the employee number
+                    "emp_no": clean_emp_no(row["Employee_No"]),
                     "name": str(row["Name"]).strip(),
                     "designation": str(row["Designation"]).strip(),
                     "type": "apprentice"
@@ -408,6 +408,7 @@ async def upload_holidays(file: UploadFile = File(...)):
             date = pd.to_datetime(raw_date, dayfirst=True, errors="coerce")
             if pd.notna(date):
                 holidays.append({
+                    # Storing in YYYY-MM-DD for database consistency and sorting
                     "date": date.strftime("%Y-%m-%d"),
                     "name": name
                 })
@@ -420,10 +421,10 @@ async def upload_holidays(file: UploadFile = File(...)):
         await hol_collection.insert_many(holidays)
 
         return {"message": f"{len(holidays)} holidays uploaded successfully."}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error parsing holidays: {e}")
-    
+
     finally:
         os.remove(temp_path)
 
@@ -444,7 +445,7 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
 
-    user_email = authorization  # can be a token or just email, based on how frontend is set
+    user_email = authorization
     session = await redis_get(user_email)
     if not session:
         raise HTTPException(status_code=403, detail="Session expired or invalid")
@@ -473,7 +474,7 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
         "month": month,
         "shift": shift,
         "updated_by": submitted_by,
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.now(kolkata_tz).isoformat()
     }
 
     shift_collection = db["shifts"]
@@ -492,7 +493,7 @@ attendance = APIRouter()
 
 REGULAR_ATTENDANCE_LEGEND = {
     "P": "Present",
-    "A": "Absent", 
+    "A": "Absent",
     "R": "Rest",
     "CL": "Casual Leave",
     "LAP": "Leave On Average Pay",
@@ -513,13 +514,13 @@ REGULAR_ATTENDANCE_LEGEND = {
 APPRENTICE_ATTENDANCE_LEGEND = {
     "P": "Present",
     "A": "Absent",
-    "R": "Rest", 
+    "R": "Rest",
     "S": "Sick",
     "CL": "Casual Leave",
     "REL": "Released"
 }
 
-@attendance.post("attendance")
+@attendance.post("/attendance")
 async def mark_attendance(request: Request, authorization: str = Header(None)):
     body = await request.json()
 
@@ -529,7 +530,7 @@ async def mark_attendance(request: Request, authorization: str = Header(None)):
 
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
-    
+
     if not all([emp_no, month, attendance]):
         raise HTTPException(status_code=400, detail="Missing required fields")
 
@@ -581,11 +582,11 @@ async def mark_attendance(request: Request, authorization: str = Header(None)):
     # Validate each attendance record
     for date_str, code in attendance.items():
         try:
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-            if not (start_date <= date_obj <= end_date):
+            date_obj = datetime.strptime(date_str, "%d-%m-%Y")
+            if not (start_date.date() <= date_obj.date() <= end_date.date()):
                 raise HTTPException(status_code=400, detail=f"Date {date_str} is out of allowed range.")
         except:
-            raise HTTPException(status_code=400, detail=f"Invalid date format: {date_str}")
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {date_str}. Must be DD-MM-YYYY")
 
         if not any(code.startswith(valid) for valid in valid_codes):
             raise HTTPException(status_code=400, detail=f"Invalid attendance code '{code}' for type '{emp_type}'")
@@ -604,7 +605,7 @@ async def mark_attendance(request: Request, authorization: str = Header(None)):
         "month": month,
         "records": attendance,
         "updated_by": updated_by,
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.now(kolkata_tz).isoformat()
     }
 
     if existing:
@@ -632,7 +633,6 @@ app.include_router(attendance)
 # Index creation for faster queries
 @app.on_event("startup")
 async def setup_indexes():
-    # await db["attendance"].create_index([("emp_no", 1), ("month", 1)])
     await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
     await db["employees"].create_index("emp_no")
     await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
@@ -657,29 +657,29 @@ async def get_attendance_legend():
 # Add this endpoint for getting attendance legends
 @app.get("/attendance")
 async def get_attendance(
-    emp_no: str = None, 
+    emp_no: str = None,
     month: str = None,
     authorization: str = Header(None)
 ):
     # Check if user is logged in
     if not authorization:
         raise HTTPException(status_code=403, detail="Please login first")
-    
+
     # Verify session exists in Redis
     session = await redis_get(authorization)
     if not session:
         raise HTTPException(status_code=403, detail="Session expired. Please login again")
-    
+
     # Build search filter
     filter_query = {}
-    
+
     if emp_no:
         # Check if employee exists
         employee = await db["employees"].find_one({"emp_no": emp_no})
         if not employee:
             raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
         filter_query["emp_no"] = emp_no
-    
+
     if month:
         # Validate month format (YYYY-MM)
         try:
@@ -689,28 +689,28 @@ async def get_attendance(
         except:
             raise HTTPException(status_code=400, detail="Month should be in YYYY-MM format")
         filter_query["month"] = month
-    
+
     # Get attendance records from database
     attendance_records = []
     cursor = db["attendance"].find(filter_query).sort("month", -1)
-    
+
     async for record in cursor:
         # Remove MongoDB _id field
         record.pop('_id', None)
-        
+
         # Calculate summary (count of each attendance type)
         summary = {}
         for attendance_code in record.get("records", {}).values():
             # Handle codes like "P/8" - take only the first part
             code = attendance_code.split("/")[0] if "/" in attendance_code else attendance_code
             summary[code] = summary.get(code, 0) + 1
-        
+
         # Add summary to record
         record["summary"] = summary
         record["total_days"] = len(record.get("records", {}))
-        
+
         attendance_records.append(record)
-    
+
     # Return results
     if not attendance_records:
         return {
@@ -718,7 +718,7 @@ async def get_attendance(
             "data": [],
             "count": 0
         }
-    
+
     return {
         "message": "Attendance records retrieved successfully",
         "data": attendance_records,
@@ -735,11 +735,11 @@ async def get_monthly_summary(
     # Check authentication
     if not authorization:
         raise HTTPException(status_code=403, detail="Please login first")
-    
+
     session = await redis_get(authorization)
     if not session:
         raise HTTPException(status_code=403, detail="Session expired")
-    
+
     # Validate month
     try:
         year, month_num = map(int, month.split("-"))
@@ -747,18 +747,18 @@ async def get_monthly_summary(
             raise ValueError()
     except:
         raise HTTPException(status_code=400, detail="Month should be in YYYY-MM format")
-    
+
     # Get all attendance for the month
     records = []
     cursor = db["attendance"].find({"month": month}).sort("emp_no", 1)
-    
+
     async for record in cursor:
         # Calculate summary for each employee
         summary = {}
         for code in record.get("records", {}).values():
             clean_code = code.split("/")[0] if "/" in code else code
             summary[clean_code] = summary.get(clean_code, 0) + 1
-        
+
         records.append({
             "emp_no": record.get("emp_no"),
             "name": record.get("emp_name"),
@@ -766,7 +766,7 @@ async def get_monthly_summary(
             "total_days": len(record.get("records", {})),
             "breakdown": summary
         })
-    
+
     if not records:
         return {
             "message": f"No attendance data found for {month}",
@@ -774,7 +774,7 @@ async def get_monthly_summary(
             "employees": [],
             "total_employees": 0
         }
-    
+
     return {
         "message": f"Monthly summary for {month}",
         "month": month,
@@ -792,32 +792,32 @@ async def get_employee_history(
     # Check authentication
     if not authorization:
         raise HTTPException(status_code=403, detail="Please login first")
-    
+
     session = await redis_get(authorization)
     if not session:
         raise HTTPException(status_code=403, detail="Session expired")
-    
+
     # Check if employee exists
     employee = await db["employees"].find_one({"emp_no": emp_no})
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
-    
+
     # Get all attendance records for this employee
     history = []
     cursor = db["attendance"].find({"emp_no": emp_no}).sort("month", -1)
-    
+
     async for record in cursor:
         record.pop('_id', None)
-        
+
         # Add summary
         summary = {}
         for code in record.get("records", {}).values():
             clean_code = code.split("/")[0] if "/" in code else code
             summary[clean_code] = summary.get(clean_code, 0) + 1
-        
+
         record["summary"] = summary
         history.append(record)
-    
+
     return {
         "message": f"Attendance history for {employee['name']} ({emp_no})",
         "employee": {
