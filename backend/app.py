@@ -292,7 +292,17 @@ async def logout(request: Request):
         raise HTTPException(status_code=500, detail="Logout failed")
 
 
-# Load employees
+# Helper function to clean employee number
+def clean_emp_no(emp_no):
+    """Remove .0 from employee numbers and clean whitespace"""
+    emp_str = str(emp_no).strip()
+    # Remove .0 if it exists at the end
+    if emp_str.endswith('.0'):
+        emp_str = emp_str[:-2]
+    return emp_str
+
+
+# Load employees (Excel upload)
 @app.post("/employees")
 async def upload_employees(file: UploadFile = File(...)):
     import tempfile
@@ -312,15 +322,6 @@ async def upload_employees(file: UploadFile = File(...)):
         ]
         apprentice_sheet = "APPRENTICE ATTENDANCE"
 
-        # Helper function to clean employee number
-        def clean_emp_no(emp_no):
-            """Remove .0 from employee numbers and clean whitespace"""
-            emp_str = str(emp_no).strip()
-            # Remove .0 if it exists at the end
-            if emp_str.endswith('.0'):
-                emp_str = emp_str[:-2]
-            return emp_str
-
         # Regular Employees
         for sheet in regular_sheets:
             try:
@@ -338,7 +339,8 @@ async def upload_employees(file: UploadFile = File(...)):
                         "emp_no": clean_emp_no(row["Employee_No"]),
                         "name": str(row["Name"]).strip(),
                         "designation": str(row["Designation"]).strip(),
-                        "type": "regular"
+                        "type": "regular",
+                        "created_at": datetime.now(kolkata_tz).isoformat()
                     })
             except Exception as e:
                 print(f"Error reading regular sheet {sheet}: {e}")
@@ -360,7 +362,8 @@ async def upload_employees(file: UploadFile = File(...)):
                     "emp_no": clean_emp_no(row["Employee_No"]),
                     "name": str(row["Name"]).strip(),
                     "designation": str(row["Designation"]).strip(),
-                    "type": "apprentice"
+                    "type": "apprentice",
+                    "created_at": datetime.now(kolkata_tz).isoformat()
                 })
         except Exception as e:
             print(f"Error reading apprentice sheet: {e}")
@@ -382,6 +385,321 @@ async def upload_employees(file: UploadFile = File(...)):
 
     finally:
         os.remove(temp_path)
+
+
+# Manual employee addition
+@app.post("/employees/manual")
+async def add_employee_manual(request: Request, authorization: str = Header(None)):
+    """
+    Manually add a single employee to the database
+    Requires admin or superadmin authentication
+    """
+    # Check authentication
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Authorization header missing")
+
+    # Verify session exists in Redis
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again")
+
+    # Parse session data
+    if isinstance(session, dict) and 'result' in session:
+        user_data = json.loads(session['result'])
+    elif isinstance(session, str):
+        user_data = json.loads(session)
+    else:
+        raise HTTPException(status_code=403, detail="Invalid session format")
+
+    # Check if user has admin privileges
+    user_email = user_data.get("email")
+    user_role = user_data.get("role", "admin")
+    
+    # Only allow admins and superadmins
+    if user_role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Insufficient privileges. Admin access required.")
+
+    # Get request data
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON format")
+
+    # Extract and validate employee data
+    emp_no = body.get("emp_no", "").strip()
+    name = body.get("name", "").strip()
+    designation = body.get("designation", "").strip()
+    emp_type = body.get("type", "").strip().lower()
+
+    # Validation
+    if not emp_no:
+        raise HTTPException(status_code=400, detail="Employee number is required")
+    
+    if not name:
+        raise HTTPException(status_code=400, detail="Employee name is required")
+    
+    if not designation:
+        raise HTTPException(status_code=400, detail="Designation is required")
+    
+    if emp_type not in ["regular", "apprentice"]:
+        raise HTTPException(status_code=400, detail="Type must be either 'regular' or 'apprentice'")
+
+    cleaned_emp_no = clean_emp_no(emp_no)
+
+    # Check if employee already exists
+    emp_collection = db["employees"]
+    existing_employee = await emp_collection.find_one({"emp_no": cleaned_emp_no})
+    
+    if existing_employee:
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Employee with number {cleaned_emp_no} already exists"
+        )
+
+    # Create employee document
+    employee_data = {
+        "emp_no": cleaned_emp_no,
+        "name": name.title(),  # Capitalize first letter of each word
+        "designation": designation.title(),
+        "type": emp_type,
+        "created_by": user_email,
+        "created_at": datetime.now(kolkata_tz).isoformat(),
+    }
+
+    try:
+        # Insert into MongoDB
+        result = await emp_collection.insert_one(employee_data)
+        
+        # Remove MongoDB ObjectId for response
+        employee_data.pop('_id', None)
+        
+        return {
+            "message": f"Employee {name.title()} ({cleaned_emp_no}) added successfully",
+            "employee": employee_data,
+            "added_by": user_data.get("name", user_email),
+            "status": "success"
+        }
+
+    except Exception as e:
+        print(f"Error adding employee: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+# Get employees with filtering and search
+@app.get("/employees")
+async def get_employees(
+    emp_type: str = None,  # Filter by type: "regular" or "apprentice"
+    search: str = None,    # Search in name or emp_no
+    limit: int = 100,      # Pagination
+    skip: int = 0,
+    authorization: str = Header(None)
+):
+    """
+    Get list of employees with optional filtering and search
+    """
+    # Check authentication
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Please login first")
+
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+
+    # Build query filter
+    query = {}
+    
+    # Filter by type if specified
+    if emp_type and emp_type.lower() in ["regular", "apprentice"]:
+        query["type"] = emp_type.lower()
+    
+    # Add search functionality
+    if search:
+        search_regex = {"$regex": search, "$options": "i"}  # Case-insensitive search
+        query["$or"] = [
+            {"name": search_regex},
+            {"emp_no": search_regex},
+            {"designation": search_regex}
+        ]
+
+    # Get employees from database
+    emp_collection = db["employees"]
+    
+    try:
+        # Get total count for pagination info
+        total_count = await emp_collection.count_documents(query)
+        
+        # Get employees with pagination
+        cursor = emp_collection.find(query).skip(skip).limit(limit).sort("emp_no", 1)
+        
+        employees = []
+        async for emp in cursor:
+            emp.pop('_id', None)  # Remove MongoDB ObjectId
+            employees.append(emp)
+
+        return {
+            "message": "Employees retrieved successfully",
+            "employees": employees,
+            "pagination": {
+                "total": total_count,
+                "returned": len(employees),
+                "skip": skip,
+                "limit": limit
+            },
+            "filters_applied": {
+                "type": emp_type,
+                "search": search
+            }
+        }
+
+    except Exception as e:
+        print(f"Error retrieving employees: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+# Update employee
+@app.put("/employees/{emp_no}")
+async def update_employee(
+    emp_no: str,
+    request: Request,
+    authorization: str = Header(None)
+):
+    """
+    Update an existing employee's information
+    Only superadmins can update employees
+    """
+    # Check authentication
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Authorization header missing")
+
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+
+    # Parse session data
+    if isinstance(session, dict) and 'result' in session:
+        user_data = json.loads(session['result'])
+    elif isinstance(session, str):
+        user_data = json.loads(session)
+    else:
+        raise HTTPException(status_code=403, detail="Invalid session format")
+
+    # Only superadmins can update employees
+    if user_data.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Only superadmins can update employee information")
+
+    # Get request data
+    try:
+        body = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON format")
+
+    # Find existing employee
+    emp_collection = db["employees"]
+    existing_employee = await emp_collection.find_one({"emp_no": emp_no})
+    
+    if not existing_employee:
+        raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
+
+    # Prepare update data (only update provided fields)
+    update_data = {}
+    
+    if "name" in body and body["name"].strip():
+        update_data["name"] = body["name"].strip().title()
+    
+    if "designation" in body and body["designation"].strip():
+        update_data["designation"] = body["designation"].strip().title()
+    
+    if "type" in body and body["type"].lower() in ["regular", "apprentice"]:
+        update_data["type"] = body["type"].lower()
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    # Add update metadata
+    update_data["updated_by"] = user_data.get("email")
+    update_data["updated_at"] = datetime.now(kolkata_tz).isoformat()
+
+    try:
+        # Update in database
+        result = await emp_collection.update_one(
+            {"emp_no": emp_no},
+            {"$set": update_data}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Update failed")
+
+        # Get updated employee
+        updated_employee = await emp_collection.find_one({"emp_no": emp_no})
+        updated_employee.pop('_id', None)
+
+        return {
+            "message": f"Employee {emp_no} updated successfully",
+            "employee": updated_employee,
+            "updated_by": user_data.get("name", user_data.get("email")),
+            "updated_fields": list(update_data.keys())
+        }
+
+    except Exception as e:
+        print(f"Error updating employee: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+# Delete employee
+@app.delete("/employees/{emp_no}")
+async def delete_employee(
+    emp_no: str,
+    authorization: str = Header(None)
+):
+    """
+    Delete an employee from the database
+    Only superadmins can delete employees
+    """
+    # Check authentication
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Authorization header missing")
+
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+
+    # Parse session data
+    if isinstance(session, dict) and 'result' in session:
+        user_data = json.loads(session['result'])
+    elif isinstance(session, str):
+        user_data = json.loads(session)
+    else:
+        raise HTTPException(status_code=403, detail="Invalid session format")
+
+    # Only superadmins can delete employees
+    if user_data.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Only superadmins can delete employees")
+
+    # Find existing employee
+    emp_collection = db["employees"]
+    existing_employee = await emp_collection.find_one({"emp_no": emp_no})
+    
+    if not existing_employee:
+        raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
+
+    employee_name = existing_employee.get("name", "Unknown")
+
+    try:
+        # Delete from database
+        result = await emp_collection.delete_one({"emp_no": emp_no})
+
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=500, detail="Delete operation failed")
+
+        return {
+            "message": f"Employee {employee_name} ({emp_no}) deleted successfully",
+            "deleted_by": user_data.get("name", user_data.get("email")),
+            "deleted_at": datetime.now(kolkata_tz).isoformat()
+        }
+
+    except Exception as e:
+        print(f"Error deleting employee: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 # Load holidays
@@ -652,9 +970,7 @@ async def get_attendance_legend():
     }
 
 
-# Retrive attendance data
-
-# Add this endpoint for getting attendance legends
+# Retrieve attendance data
 @app.get("/attendance")
 async def get_attendance(
     emp_no: str = None,
