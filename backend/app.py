@@ -15,6 +15,7 @@ import calendar
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 from excelmaker import create_attendance_excel
+from fastapi.middleware.cors import CORSMiddleware
 
 
 
@@ -32,6 +33,15 @@ collection = db["users"]
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
+
+# App CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Employee sheet
 EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
