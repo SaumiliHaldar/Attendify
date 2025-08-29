@@ -15,6 +15,7 @@ from sessions import redis_set, redis_get, redis_delete
 import pandas as pd
 from fastapi import UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlencode
 
 
 # Load environment variables
@@ -234,6 +235,7 @@ async def google_callback(request: Request):
         "email": user_info["email"],
         "is_verified": user_info.get("verified_email", False),
         "name": user_info.get("name", ""),
+        "picture": user_info.get("picture", ""),
         "role": role,
         "created_at": datetime.now(kolkata_tz).isoformat()
     }
@@ -270,7 +272,16 @@ async def google_callback(request: Request):
         # Don't fail the entire request if Redis fails, just log it
         print(f"WARNING: Failed to store session in Redis, but continuing with authentication")
 
-    return JSONResponse(content={key: value for key, value in user_data.items() if key != "_id"})
+    # return JSONResponse(content={key: value for key, value in user_data.items() if key != "_id"})
+
+    params = {
+        "email": user_info["email"],
+        "name": user_info.get("name", ""),
+        "picture": user_info.get("picture", ""),
+        "role": role,
+    }
+    redirect_url = f"{os.getenv('FRONTEND_URL')}/?{urlencode(params)}"
+    return RedirectResponse(url=redirect_url)
 
 
 # Logout and session cleared
