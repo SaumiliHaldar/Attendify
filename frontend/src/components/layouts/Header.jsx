@@ -16,8 +16,8 @@ import {
 
 export default function Header() {
   const navItems = [
-    { name: "Features", link: "#features" },
-    { name: "Pricing", link: "#pricing" },
+    { name: "Home", link: "/" },
+    { name: "About", link: "#about" },
     { name: "Contact", link: "#contact" },
   ];
 
