@@ -33,6 +33,7 @@ collection = db["users"]
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
+FRONTEND_URL = os.getenv("FRONTEND_URL")
 
 # Timezone setup for Kolkata
 kolkata_tz = pytz.timezone("Asia/Kolkata")
@@ -280,7 +281,9 @@ async def google_callback(request: Request):
         "picture": user_info.get("picture", ""),
         "role": role,
     }
-    redirect_url = f"{os.getenv('FRONTEND_URL')}/?{urlencode(params)}"
+    if not FRONTEND_URL:
+        raise HTTPException(status_code=500, detail="FRONTEND_URL is not configured properly")
+    redirect_url = f"{FRONTEND_URL}/?{urlencode(params)}"
     return RedirectResponse(url=redirect_url)
 
 
