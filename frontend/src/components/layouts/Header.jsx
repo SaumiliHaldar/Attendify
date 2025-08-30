@@ -12,8 +12,7 @@ import {
   MobileNavToggle,
   MobileNavMenu,
 } from "@/components/ui/resizable-navbar";
-import {motion} from "framer-motion";
-import Hero from "../section/Hero";
+import { motion } from "framer-motion";
 
 export default function Header() {
   const navItems = [
@@ -186,7 +185,6 @@ export default function Header() {
         </Navbar>
       </div>
 
-      <Hero />
     </>
   );
 }
