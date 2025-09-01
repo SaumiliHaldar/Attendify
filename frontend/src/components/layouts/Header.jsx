@@ -74,7 +74,7 @@ export default function Header() {
           {/* Desktop Navigation */}
           <NavBody>
             <NavbarLogo />
-            <NavItems items={navItems} />
+            {/* <NavItems items={navItems} /> */}
             <div className="flex items-center gap-4 relative">
               {user ? (
                 <div ref={dropdownRef} className="relative">
@@ -142,7 +142,7 @@ export default function Header() {
               isOpen={isMobileMenuOpen}
               onClose={() => setIsMobileMenuOpen(false)}
             >
-              {navItems.map((item, idx) => (
+              {/* {navItems.map((item, idx) => (
                 <a
                   key={`mobile-link-${idx}`}
                   href={item.link}
@@ -151,7 +151,7 @@ export default function Header() {
                 >
                   <span className="block">{item.name}</span>
                 </a>
-              ))}
+              ))} */}
               <div className="flex w-full flex-col gap-4">
                 {user ? (
                   <div className="flex items-center gap-2">
