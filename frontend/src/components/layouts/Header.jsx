@@ -12,6 +12,7 @@ import {
   MobileNavToggle,
   MobileNavMenu,
 } from "@/components/ui/resizable-navbar";
+import { Bell } from "lucide-react";
 
 export default function Header() {
   const navItems = [
@@ -23,7 +24,9 @@ export default function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
   const dropdownRef = useRef(null);
+  const notifRef = useRef(null);
 
   // Parse query params or load from localStorage
   useEffect(() => {
@@ -47,11 +50,14 @@ export default function Header() {
     }
   }, []);
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setDropdownOpen(false);
+      }
+      if (notifRef.current && !notifRef.current.contains(event.target)) {
+        setNotifOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -73,6 +79,26 @@ export default function Header() {
         <NavBody>
           <NavbarLogo />
           <div className="flex items-center gap-4 relative">
+            {/* Notification Bell (Desktop) */}
+            {user?.role === "superadmin" && (
+              <div ref={notifRef} className="relative">
+                <Bell
+                  className="w-6 h-6 cursor-pointer text-gray-600 dark:text-gray-300"
+                  onClick={() => setNotifOpen(!notifOpen)}
+                />
+                {!notifOpen && (
+                  <span className="absolute top-0 right-0 inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                )}
+                {notifOpen && (
+                  <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
+                    <p className="font-semibold mb-2">Notifications</p>
+                    <p className="text-sm text-gray-500">No new notifications</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Profile */}
             {user ? (
               <div ref={dropdownRef} className="relative">
                 <img
@@ -147,21 +173,44 @@ export default function Header() {
             <div className="flex w-full flex-col gap-4">
               {user ? (
                 <div className="w-full">
-                  {/* Profile section (accordion-style, always open) */}
-                  <div className="flex items-center gap-3 mb-4">
-                    <img
-                      src={user.picture || "/default-avatar.png"}
-                      alt="profile"
-                      className="w-12 h-12 rounded-full border"
-                    />
-                    <div>
-                      <p className="font-semibold text-neutral-800 dark:text-neutral-200">
-                        {user.name || user.email}
-                      </p>
-                      <p className="text-sm text-neutral-500">
-                        {user.role || "User"}
-                      </p>
+                  {/* Profile section */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={user.picture || "/default-avatar.png"}
+                        alt="profile"
+                        className="w-12 h-12 rounded-full border"
+                      />
+                      <div>
+                        <p className="font-semibold text-neutral-800 dark:text-neutral-200">
+                          {user.name || user.email}
+                        </p>
+                        <p className="text-sm text-neutral-500">
+                          {user.role || "User"}
+                        </p>
+                      </div>
                     </div>
+
+                    {/* Notification Bell (Mobile) */}
+                    {user?.role === "superadmin" && (
+                      <div ref={notifRef} className="relative">
+                        <Bell
+                          className="w-6 h-6 cursor-pointer text-gray-600 dark:text-gray-300"
+                          onClick={() => setNotifOpen(!notifOpen)}
+                        />
+                        {!notifOpen && (
+                          <span className="absolute top-0 right-0 inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                        )}
+                        {notifOpen && (
+                          <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
+                            <p className="font-semibold mb-2">Notifications</p>
+                            <p className="text-sm text-gray-500">
+                              No new notifications
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Actions */}
