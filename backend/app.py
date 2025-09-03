@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, APIRouter
+from fastapi import FastAPI, Request, HTTPException, APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -54,6 +54,91 @@ EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 @app.get("/healthz")
 async def health_check():
     return {"message": "Attendify is active!", "status": "OK"}
+
+# ==============================
+# Notifications Section
+# ==============================
+active_connections: list[WebSocket] = []
+
+async def notify_superadmins(message: dict):
+    """
+    Push a notification to all connected superadmin sockets.
+    """
+    for connection in active_connections:
+        try:
+            await connection.send_text(json.dumps(message))
+        except:
+            continue
+
+async def auto_notify(request: Request, actor: str, action: str):
+    """
+    Auto-generate a notification when admin tries something blocked.
+    Uses Asia/Kolkata timezone and dd-mm-yyyy HH:MM:SS format.
+    """
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
+
+    notification = {
+        "title": "Unauthorized Action Blocked",
+        "message": f"User {actor} tried to {action}.",
+        "timestamp": now.strftime("%d-%m-%Y %H:%M:%S"),  # Kolkata format
+        "status": "unread",
+        "expireAt": now.astimezone(pytz.UTC) + timedelta(days=30)  # expire in UTC
+    }
+
+    # ✅ Use global db directly
+    await db["notifications"].insert_one(notification)
+    await notify_superadmins(notification)
+
+@app.get("/notifications")
+async def get_notifications(status: str = None):
+    """
+    Fetch notifications. Filter by status if provided.
+    """
+    query = {}
+    if status:
+        query["status"] = status
+
+    notifications = await db["notifications"].find(query).sort("expireAt", -1).to_list(100)
+    return notifications
+
+@app.post("/notifications/read/{notification_id}")
+async def mark_notification_read(notification_id: str):
+    """
+    Mark a notification as read by ID.
+    """
+    from bson import ObjectId
+    result = await db["notifications"].update_one(
+        {"_id": ObjectId(notification_id)},
+        {"$set": {"status": "read"}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"success": True, "notification_id": notification_id}
+
+@app.post("/notifications/read-all")
+async def mark_all_notifications_read():
+    """
+    Mark all unread notifications as read.
+    """
+    result = await db["notifications"].update_many(
+        {"status": "unread"},
+        {"$set": {"status": "read"}}
+    )
+    return {"success": True, "modified_count": result.modified_count}
+
+@app.websocket("/notifications/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Superadmin WebSocket connection for live notifications.
+    """
+    await websocket.accept()
+    active_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # keep alive
+    except WebSocketDisconnect:
+        active_connections.remove(websocket)
 
 
 # Home Route
@@ -256,7 +341,8 @@ async def google_callback(request: Request):
     session_data = {
         "email": user_info["email"],
         "name": user_info.get("name", ""),
-        "is_verified": user_info.get("verified_email", False)
+        "is_verified": user_info.get("verified_email", False),
+        "role": role
     }
 
     try:
@@ -599,6 +685,7 @@ async def update_employee(
 
     # Only superadmins can update employees
     if user_data.get("role") != "superadmin":
+        await auto_notify(request, user_data.get("email"), f"update employee {emp_no}")
         raise HTTPException(status_code=403, detail="Only superadmins can update employee information")
 
     # Get request data
@@ -631,7 +718,7 @@ async def update_employee(
 
     # Add update metadata
     update_data["updated_by"] = user_data.get("email")
-    update_data["updated_at"] = datetime.now(kolkata_tz).isoformat()
+    update_data["updated_at"] = datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
 
     try:
         # Update in database
@@ -662,6 +749,7 @@ async def update_employee(
 # Delete employee
 @app.delete("/employees/{emp_no}")
 async def delete_employee(
+    request: Request,
     emp_no: str,
     authorization: str = Header(None)
 ):
@@ -687,6 +775,7 @@ async def delete_employee(
 
     # Only superadmins can delete employees
     if user_data.get("role") != "superadmin":
+        await auto_notify(request, user_data.get("email"), f"delete employee {emp_no}")
         raise HTTPException(status_code=403, detail="Only superadmins can delete employees")
 
     # Find existing employee
@@ -708,7 +797,7 @@ async def delete_employee(
         return {
             "message": f"Employee {employee_name} ({emp_no}) deleted successfully",
             "deleted_by": user_data.get("name", user_data.get("email")),
-            "deleted_at": datetime.now(kolkata_tz).isoformat()
+            "deleted_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
         }
 
     except Exception as e:
@@ -762,6 +851,64 @@ async def upload_holidays(file: UploadFile = File(...)):
 
 
 # Shift management
+# @app.post("/shift")
+# async def assign_shift(request: Request, authorization: str = Header(None)):
+#     body = await request.json()
+
+#     emp_no = body.get("emp_no")
+#     month = body.get("month")  # "YYYY-MM"
+#     shift = body.get("shift", {})
+
+#     if not all([emp_no, month, shift]):
+#         raise HTTPException(status_code=400, detail="Missing required fields")
+
+#     # Get user session from header
+#     if not authorization:
+#         raise HTTPException(status_code=403, detail="Authorization header missing")
+
+#     user_email = authorization
+#     session = await redis_get(user_email)
+#     if not session:
+#         raise HTTPException(status_code=403, detail="Session expired or invalid")
+
+#     # Fix: Handle the Redis response format
+#     if isinstance(session, dict) and 'result' in session:
+#         session_data = json.loads(session['result'])
+#     elif isinstance(session, str):
+#         session_data = json.loads(session)
+#     else:
+#         raise HTTPException(status_code=403, detail="Invalid session format")
+
+#     submitted_by = session_data.get("email")
+
+#     # Get employee name
+#     employee = await db["employees"].find_one({"emp_no": emp_no})
+#     if not employee:
+#         raise HTTPException(status_code=404, detail="Employee not found")
+
+#     name = employee.get("name", "")
+
+#     # Build shift document
+#     shift_doc = {
+#         "emp_no": emp_no,
+#         "name": name,
+#         "month": month,
+#         "shift": shift,
+#         "updated_by": submitted_by,
+#         "updated_at": datetime.now(kolkata_tz).isoformat()
+#     }
+
+#     shift_collection = db["shifts"]
+#     existing = await shift_collection.find_one({"emp_no": emp_no, "month": month})
+
+#     if existing:
+#         await shift_collection.replace_one({"_id": existing["_id"]}, shift_doc)
+#     else:
+#         await shift_collection.insert_one(shift_doc)
+
+#     return {"message": f"Shift updated for {name} ({emp_no}) for {month}."}
+
+# Shift management
 @app.post("/shift")
 async def assign_shift(request: Request, authorization: str = Header(None)):
     body = await request.json()
@@ -792,6 +939,11 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
 
     submitted_by = session_data.get("email")
 
+    # Restriction: only superadmins can assign shifts
+    if session_data.get("role") != "superadmin":
+        await auto_notify(request, submitted_by, f"assign/modify shift for {emp_no}")
+        raise HTTPException(status_code=403, detail="Only superadmins can modify shifts")
+
     # Get employee name
     employee = await db["employees"].find_one({"emp_no": emp_no})
     if not employee:
@@ -806,7 +958,7 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
         "month": month,
         "shift": shift,
         "updated_by": submitted_by,
-        "updated_at": datetime.now(kolkata_tz).isoformat()
+        "updated_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
     }
 
     shift_collection = db["shifts"]
@@ -928,7 +1080,9 @@ async def mark_attendance(request: Request, authorization: str = Header(None)):
     existing = await attendance_collection.find_one({"emp_no": emp_no, "month": month})
 
     if existing and role != "superadmin":
+        await auto_notify(request, updated_by, f"modify attendance for {emp_no}")
         raise HTTPException(status_code=403, detail="Only superadmin can modify existing attendance")
+
 
     doc = {
         "emp_no": emp_no,
@@ -937,7 +1091,7 @@ async def mark_attendance(request: Request, authorization: str = Header(None)):
         "month": month,
         "records": attendance,
         "updated_by": updated_by,
-        "updated_at": datetime.now(kolkata_tz).isoformat()
+        "updated_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
     }
 
     if existing:
