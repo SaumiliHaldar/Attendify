@@ -55,6 +55,7 @@ EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 async def health_check():
     return {"message": "Attendify is active!", "status": "OK"}
 
+
 # ==============================
 # Notifications Section
 # ==============================
@@ -83,11 +84,13 @@ async def auto_notify(request: Request, actor: str, action: str):
         "message": f"User {actor} tried to {action}.",
         "timestamp": now.strftime("%d-%m-%Y %H:%M:%S"),  # Kolkata format
         "status": "unread",
-        "expireAt": now.astimezone(pytz.UTC) + timedelta(days=30)  # expire in UTC
+        "expireAt": now + timedelta(days=30)  # Kolkata time + 30 days
     }
 
-    # ✅ Use global db directly
-    await db["notifications"].insert_one(notification)
+    result = await db["notifications"].insert_one(notification)
+    notification["_id"] = str(result.inserted_id)
+
+    # Push to live superadmins
     await notify_superadmins(notification)
 
 @app.get("/notifications")
@@ -100,6 +103,11 @@ async def get_notifications(status: str = None):
         query["status"] = status
 
     notifications = await db["notifications"].find(query).sort("expireAt", -1).to_list(100)
+
+    # Convert ObjectId → string for all results
+    for n in notifications:
+        n["_id"] = str(n["_id"])
+
     return notifications
 
 @app.post("/notifications/read/{notification_id}")
@@ -114,6 +122,7 @@ async def mark_notification_read(notification_id: str):
     )
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
+
     return {"success": True, "notification_id": notification_id}
 
 @app.post("/notifications/read-all")
