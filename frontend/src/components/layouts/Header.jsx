@@ -25,8 +25,11 @@ export default function Header() {
   const [user, setUser] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
   const dropdownRef = useRef(null);
   const notifRef = useRef(null);
+
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
   // Parse query params or load from localStorage
   useEffect(() => {
@@ -64,12 +67,70 @@ export default function Header() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Fetch notifications when notifOpen toggled
+  useEffect(() => {
+    if (notifOpen && user?.role === "superadmin") {
+      fetch(`${API_URL}/notifications`)
+        .then((res) => res.json())
+        .then((data) => setNotifications(data))
+        .catch((err) => console.error("Error fetching notifications:", err));
+    }
+  }, [notifOpen, user]);
+
+  // WebSocket for realtime notifications with secure WSS handling
+  useEffect(() => {
+    if (user?.role === "superadmin") {
+      let wsUrl;
+      if (API_URL.startsWith("https")) {
+        wsUrl = API_URL.replace("https", "wss") + "/notifications/ws";
+      } else {
+        wsUrl = API_URL.replace("http", "ws") + "/notifications/ws";
+      }
+
+      const ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const newNotif = JSON.parse(event.data);
+          setNotifications((prev) => [newNotif, ...prev]);
+        } catch (e) {
+          console.error("Invalid WS message:", e);
+        }
+      };
+
+      ws.onerror = (err) => console.error("WS error:", err);
+      return () => ws.close();
+    }
+  }, [user]);
+
+  // Mark single notification as read
+  const markAsRead = async (id) => {
+    try {
+      await fetch(`${API_URL}/notifications/read/${id}`, { method: "POST" });
+      setNotifications((prev) =>
+        prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
+      );
+    } catch (e) {
+      console.error("Error marking as read:", e);
+    }
+  };
+
+  // Mark all notifications as read
+  const markAllAsRead = async () => {
+    try {
+      await fetch(`${API_URL}/notifications/read-all`, { method: "POST" });
+      setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
+    } catch (e) {
+      console.error("Error marking all as read:", e);
+    }
+  };
+
   // Logout function
   const handleLogout = () => {
     localStorage.removeItem("user");
     setUser(null);
     setDropdownOpen(false);
-    window.location.href = "/"; // redirect to home after logout
+    window.location.href = "/";
   };
 
   return (
@@ -86,13 +147,53 @@ export default function Header() {
                   className="w-6 h-6 cursor-pointer text-gray-600 dark:text-gray-300"
                   onClick={() => setNotifOpen(!notifOpen)}
                 />
-                {!notifOpen && (
+                {notifications.some((n) => n.status === "unread") && !notifOpen && (
                   <span className="absolute top-0 right-0 inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
                 )}
                 {notifOpen && (
-                  <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
-                    <p className="font-semibold mb-2">Notifications</p>
-                    <p className="text-sm text-gray-500">No new notifications</p>
+                  <div className="absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="font-semibold">Notifications</p>
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={markAllAsRead}
+                          className="text-xs text-blue-500 hover:underline"
+                        >
+                          Mark all as read
+                        </button>
+                      )}
+                    </div>
+                    {notifications.length === 0 ? (
+                      <p className="text-sm text-gray-500">No new notifications</p>
+                    ) : (
+                      <ul className="space-y-3">
+                        {notifications.map((notif) => (
+                          <li
+                            key={notif._id}
+                            className={`p-2 rounded-md ${
+                              notif.status === "unread"
+                                ? "bg-green-50 dark:bg-green-900/20"
+                                : "bg-neutral-50 dark:bg-neutral-800"
+                            }`}
+                          >
+                            <p className="text-sm">{notif.message}</p>
+                            <div className="flex justify-between items-center mt-1">
+                              <span className="text-xs text-gray-500">
+                                {notif.timestamp}
+                              </span>
+                              {notif.status === "unread" && (
+                                <button
+                                  onClick={() => markAsRead(notif._id)}
+                                  className="text-xs text-blue-500 hover:underline"
+                                >
+                                  Mark as read
+                                </button>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
               </div>
@@ -119,9 +220,7 @@ export default function Header() {
                         <p className="font-semibold text-neutral-800 dark:text-neutral-200">
                           {user.name || user.email}
                         </p>
-                        <p className="text-sm text-neutral-500">
-                          {user.role || "User"}
-                        </p>
+                        <p className="text-sm text-neutral-500">{user.role || "User"}</p>
                       </div>
                     </div>
                     <a
@@ -148,7 +247,7 @@ export default function Header() {
             ) : (
               <NavbarButton
                 variant="dark"
-                href={`${process.env.NEXT_PUBLIC_API_URL}/auth/google`}
+                href={`${API_URL}/auth/google`}
               >
                 Login
               </NavbarButton>
@@ -185,9 +284,7 @@ export default function Header() {
                         <p className="font-semibold text-neutral-800 dark:text-neutral-200">
                           {user.name || user.email}
                         </p>
-                        <p className="text-sm text-neutral-500">
-                          {user.role || "User"}
-                        </p>
+                        <p className="text-sm text-neutral-500">{user.role || "User"}</p>
                       </div>
                     </div>
 
@@ -198,16 +295,8 @@ export default function Header() {
                           className="w-6 h-6 cursor-pointer text-gray-600 dark:text-gray-300"
                           onClick={() => setNotifOpen(!notifOpen)}
                         />
-                        {!notifOpen && (
+                        {notifications.some((n) => n.status === "unread") && !notifOpen && (
                           <span className="absolute top-0 right-0 inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
-                        )}
-                        {notifOpen && (
-                          <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
-                            <p className="font-semibold mb-2">Notifications</p>
-                            <p className="text-sm text-gray-500">
-                              No new notifications
-                            </p>
-                          </div>
                         )}
                       </div>
                     )}
@@ -238,7 +327,7 @@ export default function Header() {
                   onClick={() => setIsMobileMenuOpen(false)}
                   variant="primary"
                   className="w-full"
-                  href={`${process.env.NEXT_PUBLIC_API_URL}/auth/google`}
+                  href={`${API_URL}/auth/google`}
                 >
                   Login
                 </NavbarButton>
