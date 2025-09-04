@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { AuroraBackground } from "@/components/ui/aurora-background";
 import { NavbarButton } from "@/components/ui/resizable-navbar";
 
-export default function SidebarLayout({ children }) {
+export default function Dashboard({ children }) {
   const [open, setOpen] = useState(true);
   const [user, setUser] = useState(null);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -157,7 +157,11 @@ export default function SidebarLayout({ children }) {
                   <>
                     <span>Notifications</span>
                     <div className="ml-auto flex items-center gap-1">
-                      {notifOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                      {notifOpen ? (
+                        <ChevronUp size={16} />
+                      ) : (
+                        <ChevronDown size={16} />
+                      )}
                     </div>
                   </>
                 )}
@@ -171,15 +175,15 @@ export default function SidebarLayout({ children }) {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
                     className={cn(
-                      "absolute top-full mt-2 w-64 max-h-64 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-md z-50",
-                      !open && "left-full ml-2" // side dropdown if collapsed
+                      "absolute top-full mt-1 w-full max-h-64 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-md z-50",
+                      !open && "left-full ml-2 w-64" // float outside when collapsed
                     )}
                   >
-                    {/* MARK ALL ON TOP */}
+
                     {notifications.length > 0 && (
                       <button
                         onClick={markAllAsRead}
-                        className="text-sm text-blue-500 hover:underline p-2 w-full text-left border-b border-neutral-200 dark:border-neutral-700"
+                        className="text-sm text-blue-500 hover:underline p-2 w-full text-left border-b border-neutral-200 dark:border-neutral-700 sticky top-0 bg-white dark:bg-neutral-900 z-10"
                       >
                         Mark all as read
                       </button>
@@ -187,7 +191,9 @@ export default function SidebarLayout({ children }) {
 
                     {/* Notifications list */}
                     {notifications.length === 0 ? (
-                      <p className="text-sm text-gray-500 p-2">No notifications</p>
+                      <p className="text-sm text-gray-500 p-2">
+                        No notifications
+                      </p>
                     ) : (
                       notifications.map((notif) => (
                         <div
@@ -201,7 +207,7 @@ export default function SidebarLayout({ children }) {
                         >
                           <div className="flex flex-col">
                             <span>{notif.message}</span>
-                            <span className="text-xs text-gray-500 mt-1">
+                            <span className="text-sm text-gray-500 mt-1">
                               {new Date(notif.timestamp).toLocaleString()}
                             </span>
                           </div>
