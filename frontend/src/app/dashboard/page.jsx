@@ -17,40 +17,52 @@ export default function SidebarLayout({ children }) {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
+  // Load user on client-side only
   useEffect(() => {
-    const saved = localStorage.getItem("user");
-    if (saved) setUser(JSON.parse(saved));
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("user");
+      if (saved) setUser(JSON.parse(saved));
+    }
   }, []);
 
-  // WebSocket for realtime notifications
+  // WebSocket for realtime notifications (client-side only)
   useEffect(() => {
-    if (user?.role === "superadmin") {
-      const wsUrl = API_URL.replace(/^http/, API_URL.startsWith("https") ? "wss" : "ws") + "/notifications/ws";
-      const ws = new WebSocket(wsUrl);
-      ws.onmessage = (event) => {
-        try {
-          const newNotif = JSON.parse(event.data);
-          setNotifications((prev) => [newNotif, ...prev]);
-        } catch (e) {
-          console.error("Invalid WS message:", e);
-        }
-      };
-      ws.onerror = (err) => console.error("WebSocket error:", err);
-      return () => ws.close();
-    }
-  }, [user]);
+    if (typeof window === "undefined") return;
+    if (user?.role !== "superadmin") return;
 
-  // Fetch notifications when dropdown opens
+    let wsUrl = "";
+    if (API_URL.startsWith("https")) {
+      wsUrl = API_URL.replace("https", "wss") + "/notifications/ws";
+    } else {
+      wsUrl = API_URL.replace("http", "ws") + "/notifications/ws";
+    }
+
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const newNotif = JSON.parse(event.data);
+        setNotifications((prev) => [newNotif, ...prev]);
+      } catch (e) {
+        console.error("Invalid WS message:", e);
+      }
+    };
+
+    ws.onerror = (err) => console.error("WebSocket error:", err);
+
+    return () => ws.close();
+  }, [user, API_URL]);
+
+  // Fetch notifications when opened
   useEffect(() => {
-    if (notifOpen && user?.role === "superadmin") {
-      fetch(`${API_URL}/notifications`)
-        .then((res) => res.json())
-        .then((data) => setNotifications(data))
-        .catch((err) => console.error(err));
-    }
-  }, [notifOpen, user]);
+    if (!notifOpen || !user?.role) return;
+    fetch(`${API_URL}/notifications`)
+      .then((res) => res.json())
+      .then((data) => setNotifications(data))
+      .catch((err) => console.error("Error fetching notifications:", err));
+  }, [notifOpen, user, API_URL]);
 
-  // Click outside to close dropdowns
+  // Click outside to close notifications & profile dropdown
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (sidebarRef.current && !sidebarRef.current.contains(e.target)) {
@@ -83,7 +95,7 @@ export default function SidebarLayout({ children }) {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("user");
+    if (typeof window !== "undefined") localStorage.removeItem("user");
     setUser(null);
     setDropdownOpen(false);
     window.location.href = "/";
@@ -106,10 +118,16 @@ export default function SidebarLayout({ children }) {
           {open ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
         </button>
 
-        {/* Top */}
+        {/* Top Section */}
         <div>
+          {/* Logo */}
           <div className="flex items-center gap-2 p-4">
-            <img src="https://assets.aceternity.com/logo-dark.png" alt="logo" width={30} height={30} />
+            <img
+              src="https://assets.aceternity.com/logo-dark.png"
+              alt="logo"
+              width={30}
+              height={30}
+            />
             {open && <span className="font-semibold">Attendify</span>}
           </div>
 
@@ -141,11 +159,12 @@ export default function SidebarLayout({ children }) {
                       notifications.map((notif) => (
                         <div
                           key={notif._id}
-                          className={`p-2 mb-1 rounded text-sm ${
+                          className={cn(
+                            "p-2 mb-1 rounded text-sm",
                             notif.status === "unread"
                               ? "bg-green-50 dark:bg-green-900/20"
                               : "bg-neutral-100 dark:bg-neutral-700"
-                          }`}
+                          )}
                         >
                           <div className="flex justify-between items-center">
                             <span>{notif.message}</span>
@@ -176,7 +195,7 @@ export default function SidebarLayout({ children }) {
           )}
         </div>
 
-        {/* Bottom (Profile/Login) */}
+        {/* Bottom Section (Profile/Login) */}
         <div className="p-4">
           {user ? (
             <div className="flex items-center gap-3 relative">
@@ -193,7 +212,7 @@ export default function SidebarLayout({ children }) {
                 </div>
               )}
 
-              {/* Dropdown inside sidebar */}
+              {/* Profile dropdown inside sidebar */}
               <AnimatePresence>
                 {dropdownOpen && open && (
                   <motion.div
