@@ -143,7 +143,6 @@ export default function Dashboard({ children }) {
     pendingNotifications: 0,
     pendingAttendance: 0,
     weeklyAvgPresent: 0,
-    pendingLeaves: 0,
   });
 
   return (
@@ -381,19 +380,6 @@ export default function Dashboard({ children }) {
                 </p>
               </CardContent>
             </Card>
-
-            {/* 4. Pending Leave Requests (optional) */}
-            {user?.role === "admin" && (
-              <Card>
-                <CardHeader className="flex items-center gap-2">
-                  <CalendarDays className="w-6 h-6 text-amber-500" />
-                  <CardTitle>Pending Leave Requests</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold">{overview.pendingLeaves}</p>
-                </CardContent>
-              </Card>
-            )}
           </div>
 
           {children}
