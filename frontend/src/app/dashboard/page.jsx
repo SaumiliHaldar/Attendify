@@ -13,11 +13,10 @@ export default function SidebarLayout({ children }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const notifRef = useRef(null);
+  const sidebarRef = useRef(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-  // Load user from localStorage
   useEffect(() => {
     const saved = localStorage.getItem("user");
     if (saved) setUser(JSON.parse(saved));
@@ -26,15 +25,8 @@ export default function SidebarLayout({ children }) {
   // WebSocket for realtime notifications
   useEffect(() => {
     if (user?.role === "superadmin") {
-      let wsUrl;
-      if (API_URL.startsWith("https")) {
-        wsUrl = API_URL.replace("https", "wss") + "/notifications/ws";
-      } else {
-        wsUrl = API_URL.replace("http", "ws") + "/notifications/ws";
-      }
-
+      const wsUrl = API_URL.replace(/^http/, API_URL.startsWith("https") ? "wss" : "ws") + "/notifications/ws";
       const ws = new WebSocket(wsUrl);
-
       ws.onmessage = (event) => {
         try {
           const newNotif = JSON.parse(event.data);
@@ -43,24 +35,33 @@ export default function SidebarLayout({ children }) {
           console.error("Invalid WS message:", e);
         }
       };
-
       ws.onerror = (err) => console.error("WebSocket error:", err);
-
       return () => ws.close();
     }
   }, [user]);
 
-  // Fetch notifications when dropdown opens (optional)
+  // Fetch notifications when dropdown opens
   useEffect(() => {
     if (notifOpen && user?.role === "superadmin") {
       fetch(`${API_URL}/notifications`)
         .then((res) => res.json())
         .then((data) => setNotifications(data))
-        .catch((err) => console.error("Error fetching notifications:", err));
+        .catch((err) => console.error(err));
     }
   }, [notifOpen, user]);
 
-  // Mark single notification as read
+  // Click outside to close dropdowns
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (sidebarRef.current && !sidebarRef.current.contains(e.target)) {
+        setNotifOpen(false);
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const markAsRead = async (id) => {
     try {
       await fetch(`${API_URL}/notifications/read/${id}`, { method: "POST" });
@@ -68,21 +69,19 @@ export default function SidebarLayout({ children }) {
         prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
       );
     } catch (e) {
-      console.error("Error marking as read:", e);
+      console.error(e);
     }
   };
 
-  // Mark all notifications as read
   const markAllAsRead = async () => {
     try {
       await fetch(`${API_URL}/notifications/read-all`, { method: "POST" });
       setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
     } catch (e) {
-      console.error("Error marking all as read:", e);
+      console.error(e);
     }
   };
 
-  // Logout function
   const handleLogout = () => {
     localStorage.removeItem("user");
     setUser(null);
@@ -91,7 +90,7 @@ export default function SidebarLayout({ children }) {
   };
 
   return (
-    <div className="flex h-screen w-full">
+    <div className="flex h-screen w-full" ref={sidebarRef}>
       {/* Sidebar */}
       <motion.div
         animate={{ width: open ? 240 : 72 }}
@@ -104,72 +103,56 @@ export default function SidebarLayout({ children }) {
           onClick={() => setOpen(!open)}
           className="absolute -right-3 top-8 z-50 flex items-center justify-center h-6 w-6 rounded-full bg-neutral-200 dark:bg-neutral-700 shadow-md"
         >
-          {open ? (
-            <ChevronLeft size={16} className="text-neutral-700 dark:text-neutral-200" />
-          ) : (
-            <ChevronRight size={16} className="text-neutral-700 dark:text-neutral-200" />
-          )}
+          {open ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
         </button>
 
         {/* Top */}
         <div>
-          {/* Logo */}
           <div className="flex items-center gap-2 p-4">
             <img src="https://assets.aceternity.com/logo-dark.png" alt="logo" width={30} height={30} />
             {open && <span className="font-semibold">Attendify</span>}
           </div>
 
-          {/* Notifications */}
-          {user?.role === "superadmin" && (
-            <div ref={notifRef} className="relative px-2 mt-6">
+          {/* Notifications inside sidebar */}
+          {user?.role === "superadmin" && open && (
+            <div className="px-2 mt-6">
               <div
                 className="flex items-center gap-2 p-2 cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded"
                 onClick={() => setNotifOpen(!notifOpen)}
               >
                 <Bell size={20} />
-                {open && <span>Notifications</span>}
+                <span>Notifications</span>
+                {notifications.some((n) => n.status === "unread") && (
+                  <span className="ml-auto w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                )}
               </div>
-
-              {notifications.some((n) => n.status === "unread") && !notifOpen && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full animate-ping" />
-              )}
 
               <AnimatePresence>
                 {notifOpen && (
                   <motion.div
-                    initial={{ opacity: 0, y: 10 }}
+                    initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
-                    className="absolute left-14 top-0 w-72 max-h-80 overflow-y-auto bg-white dark:bg-neutral-800 shadow-lg rounded-lg p-3 z-50"
+                    exit={{ opacity: 0, y: 5 }}
+                    className="mt-2 max-h-64 overflow-y-auto"
                   >
-                    <div className="flex justify-between items-center mb-2">
-                      <p className="font-semibold">Notifications</p>
-                      {notifications.length > 0 && (
-                        <button
-                          onClick={markAllAsRead}
-                          className="text-xs text-blue-500 hover:underline"
-                        >
-                          Mark all as read
-                        </button>
-                      )}
-                    </div>
-
                     {notifications.length === 0 ? (
                       <p className="text-sm text-gray-500">No notifications</p>
                     ) : (
                       notifications.map((notif) => (
                         <div
                           key={notif._id}
-                          className={`p-2 mb-2 rounded ${
-                            notif.status === "unread" ? "bg-green-50 dark:bg-green-900/20" : "bg-neutral-100 dark:bg-neutral-700"
+                          className={`p-2 mb-1 rounded text-sm ${
+                            notif.status === "unread"
+                              ? "bg-green-50 dark:bg-green-900/20"
+                              : "bg-neutral-100 dark:bg-neutral-700"
                           }`}
                         >
-                          <p className="text-sm">{notif.message}</p>
-                          <div className="flex justify-between items-center mt-1">
+                          <div className="flex justify-between items-center">
+                            <span>{notif.message}</span>
                             {notif.status === "unread" && (
                               <button
                                 onClick={() => markAsRead(notif._id)}
-                                className="text-xs text-blue-500 hover:underline"
+                                className="text-xs text-blue-500 hover:underline ml-2"
                               >
                                 Mark as read
                               </button>
@@ -177,6 +160,14 @@ export default function SidebarLayout({ children }) {
                           </div>
                         </div>
                       ))
+                    )}
+                    {notifications.length > 0 && (
+                      <button
+                        onClick={markAllAsRead}
+                        className="text-xs text-blue-500 hover:underline mt-2"
+                      >
+                        Mark all as read
+                      </button>
                     )}
                   </motion.div>
                 )}
@@ -188,7 +179,7 @@ export default function SidebarLayout({ children }) {
         {/* Bottom (Profile/Login) */}
         <div className="p-4">
           {user ? (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 relative">
               <img
                 src={user.picture || "/default-avatar.png"}
                 className="h-10 w-10 rounded-full border cursor-pointer"
@@ -202,12 +193,13 @@ export default function SidebarLayout({ children }) {
                 </div>
               )}
 
+              {/* Dropdown inside sidebar */}
               <AnimatePresence>
-                {dropdownOpen && (
+                {dropdownOpen && open && (
                   <motion.div
-                    initial={{ opacity: 0, y: 10 }}
+                    initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
+                    exit={{ opacity: 0, y: 5 }}
                     className="absolute bottom-14 left-4 w-56 bg-white dark:bg-neutral-900 shadow-lg rounded-lg p-4 z-50"
                   >
                     <p className="font-semibold mb-2">{user.name}</p>
