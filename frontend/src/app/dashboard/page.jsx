@@ -27,7 +27,6 @@ export default function SidebarLayout({ children }) {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-  // Load user on client-side only
   useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("user");
@@ -35,12 +34,11 @@ export default function SidebarLayout({ children }) {
     }
   }, []);
 
-  // WebSocket for realtime notifications
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (user?.role !== "superadmin") return;
 
-    let wsUrl = API_URL.startsWith("https")
+    const wsUrl = API_URL.startsWith("https")
       ? API_URL.replace("https", "wss") + "/notifications/ws"
       : API_URL.replace("http", "ws") + "/notifications/ws";
 
@@ -60,7 +58,6 @@ export default function SidebarLayout({ children }) {
     return () => ws.close();
   }, [user, API_URL]);
 
-  // Fetch notifications when opened
   useEffect(() => {
     if (!notifOpen || !user?.role) return;
     fetch(`${API_URL}/notifications`)
@@ -69,7 +66,6 @@ export default function SidebarLayout({ children }) {
       .catch((err) => console.error("Error fetching notifications:", err));
   }, [notifOpen, user, API_URL]);
 
-  // Click outside to close notifications & profile dropdown
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (notifRef.current && !notifRef.current.contains(e.target)) {
@@ -151,24 +147,17 @@ export default function SidebarLayout({ children }) {
                 title="Notifications"
                 aria-label="Notifications"
               >
-                {/* Bell with ping */}
                 <div className="relative">
                   <Bell size={20} />
                   {notifications.some((n) => n.status === "unread") && (
                     <span className="absolute top-0 right-0 w-2 h-2 bg-green-500 rounded-full animate-ping" />
                   )}
                 </div>
-
-                {/* Only show text & chevron if sidebar open */}
                 {open && (
                   <>
                     <span>Notifications</span>
                     <div className="ml-auto flex items-center gap-1">
-                      {notifOpen ? (
-                        <ChevronUp size={16} />
-                      ) : (
-                        <ChevronDown size={16} />
-                      )}
+                      {notifOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                     </div>
                   </>
                 )}
@@ -182,10 +171,21 @@ export default function SidebarLayout({ children }) {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
                     className={cn(
-                      "absolute left-full ml-2 top-0 w-64 max-h-64 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-md z-50",
-                      open ? "left-0 ml-0" : ""
+                      "absolute top-full mt-2 w-64 max-h-64 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-md z-50",
+                      !open && "left-full ml-2" // side dropdown if collapsed
                     )}
                   >
+                    {/* MARK ALL ON TOP */}
+                    {notifications.length > 0 && (
+                      <button
+                        onClick={markAllAsRead}
+                        className="text-sm text-blue-500 hover:underline p-2 w-full text-left border-b border-neutral-200 dark:border-neutral-700"
+                      >
+                        Mark all as read
+                      </button>
+                    )}
+
+                    {/* Notifications list */}
                     {notifications.length === 0 ? (
                       <p className="text-sm text-gray-500 p-2">No notifications</p>
                     ) : (
@@ -216,14 +216,6 @@ export default function SidebarLayout({ children }) {
                         </div>
                       ))
                     )}
-                    {notifications.length > 0 && (
-                      <button
-                        onClick={markAllAsRead}
-                        className="text-sm text-blue-500 hover:underline p-1 w-full text-left"
-                      >
-                        Mark all as read
-                      </button>
-                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -250,7 +242,6 @@ export default function SidebarLayout({ children }) {
                 </div>
               )}
 
-              {/* Profile dropdown */}
               <AnimatePresence>
                 {dropdownOpen && (
                   <motion.div
