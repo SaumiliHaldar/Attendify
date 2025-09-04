@@ -2,7 +2,15 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bell, User, LogOut, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  Bell,
+  User,
+  LogOut,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AuroraBackground } from "@/components/ui/aurora-background";
 import { NavbarButton } from "@/components/ui/resizable-navbar";
@@ -121,59 +129,77 @@ export default function SidebarLayout({ children }) {
         {/* Top Section */}
         <div>
           {/* Logo */}
-          <div className="flex items-center gap-2 p-4">
-            <img
-              src="https://assets.aceternity.com/logo-dark.png"
-              alt="logo"
-              width={30}
-              height={30}
-            />
-            {open && <span className="font-semibold">Attendify</span>}
-          </div>
+          <a href="/">
+            <div className="flex items-center gap-2 p-4">
+              <img
+                src="https://assets.aceternity.com/logo-dark.png"
+                alt="logo"
+                width={30}
+                height={30}
+              />
+              {open && <span className="font-semibold">Attendify</span>}
+            </div>
+          </a>
 
-          {/* Notifications inside sidebar */}
-          {user?.role === "superadmin" && open && (
-            <div className="px-2 mt-6">
+          {/* Notifications */}
+          {user?.role === "superadmin" && (
+            <div className="px-2 mt-6 relative">
               <div
-                className="flex items-center gap-2 p-2 cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded"
+                className="flex items-center gap-2 p-2 cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded relative"
                 onClick={() => setNotifOpen(!notifOpen)}
               >
-                <Bell size={20} />
-                <span>Notifications</span>
-                {notifications.some((n) => n.status === "unread") && (
-                  <span className="ml-auto w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                {/* Bell with ping for collapsed sidebar */}
+                <div className="relative">
+                  <Bell size={20} />
+                  {!open && notifications.some((n) => n.status === "unread") && (
+                    <span className="absolute top-0 right-0 w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                  )}
+                </div>
+
+                {/* Only show text & chevron if sidebar open */}
+                {open && (
+                  <>
+                    <span>Notifications</span>
+                    <div className="ml-auto flex items-center gap-1">
+                      {notifications.some((n) => n.status === "unread") && (
+                        <span className="w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                      )}
+                      {notifOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    </div>
+                  </>
                 )}
               </div>
 
+              {/* Notifications dropdown */}
               <AnimatePresence>
-                {notifOpen && (
+                {notifOpen && open && (
                   <motion.div
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="mt-2 max-h-64 overflow-y-auto"
+                    className="absolute left-0 top-full mt-2 w-64 max-h-64 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-md z-50"
                   >
                     {notifications.length === 0 ? (
-                      <p className="text-sm text-gray-500">No notifications</p>
+                      <p className="text-xs text-gray-500 p-2">No notifications</p>
                     ) : (
                       notifications.map((notif) => (
                         <div
                           key={notif._id}
                           className={cn(
-                            "p-2 mb-1 rounded text-sm",
+                            "p-1 mb-1 rounded text-xs leading-snug",
                             notif.status === "unread"
                               ? "bg-green-50 dark:bg-green-900/20"
                               : "bg-neutral-100 dark:bg-neutral-700"
                           )}
                         >
-                          <div className="flex justify-between items-center">
-                            <span>{notif.message}</span>
+                          <div className="flex justify-between items-start">
+                            <span className="block">{notif.message}</span>
                             {notif.status === "unread" && (
                               <button
                                 onClick={() => markAsRead(notif._id)}
-                                className="text-xs text-blue-500 hover:underline ml-2"
+                                className="text-[10px] text-blue-500 hover:underline ml-2"
                               >
-                                Mark as read
+                                Mark
                               </button>
                             )}
                           </div>
@@ -183,7 +209,7 @@ export default function SidebarLayout({ children }) {
                     {notifications.length > 0 && (
                       <button
                         onClick={markAllAsRead}
-                        className="text-xs text-blue-500 hover:underline mt-2"
+                        className="text-xs text-blue-500 hover:underline p-1 w-full text-left"
                       >
                         Mark all as read
                       </button>
@@ -212,7 +238,7 @@ export default function SidebarLayout({ children }) {
                 </div>
               )}
 
-              {/* Profile dropdown inside sidebar */}
+              {/* Profile dropdown */}
               <AnimatePresence>
                 {dropdownOpen && open && (
                   <motion.div
