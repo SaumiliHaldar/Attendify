@@ -10,10 +10,16 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronDown,
+  Users,
+  CalendarCheck,
+  Calendar,
+  CalendarDays,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AuroraBackground } from "@/components/ui/aurora-background";
 import { NavbarButton } from "@/components/ui/resizable-navbar";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 export default function Dashboard({ children }) {
   const [open, setOpen] = useState(true);
@@ -79,6 +85,24 @@ export default function Dashboard({ children }) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Fetch employee count
+  useEffect(() => {
+  const fetchEmployeeCount = async () => {
+    try {
+      const res = await fetch(`${API_URL}/employees/count`);
+      const data = await res.json();
+      setOverview((prev) => ({ ...prev, employees: data.count }));
+    } catch (err) {
+      console.error("Error fetching employees count:", err);
+    }
+  };
+
+  fetchEmployeeCount();
+  const interval = setInterval(fetchEmployeeCount, 5000);
+  return () => clearInterval(interval);
+}, [API_URL]);
+
+
   const markAsRead = async (id) => {
     try {
       await fetch(`${API_URL}/notifications/read/${id}`, { method: "POST" });
@@ -105,6 +129,22 @@ export default function Dashboard({ children }) {
     setDropdownOpen(false);
     window.location.href = "/";
   };
+
+  const dashboardTitle =
+    user?.role === "superadmin"
+      ? "Superadmin Dashboard"
+      : user?.role === "admin"
+      ? "Admin Dashboard"
+      : "Dashboard";
+
+  const [overview, setOverview] = useState({
+    employees: 0,
+    attendanceToday: 0,
+    pendingNotifications: 0,
+    pendingAttendance: 0,
+    weeklyAvgPresent: 0,
+    pendingLeaves: 0,
+  });
 
   return (
     <div className="flex h-screen w-full" ref={sidebarRef}>
@@ -179,7 +219,6 @@ export default function Dashboard({ children }) {
                       !open && "left-full ml-2 w-64" // float outside when collapsed
                     )}
                   >
-
                     {notifications.length > 0 && (
                       <button
                         onClick={markAllAsRead}
@@ -287,9 +326,78 @@ export default function Dashboard({ children }) {
       </motion.div>
 
       {/* Main content */}
-      <div className="flex-1 overflow-y-auto relative">
+      <div className="flex-1 overflow-y-auto relative p-8">
         <AuroraBackground className="absolute inset-0 -z-10" />
-        <div className="relative z-10">{children}</div>
+        <div className="relative z-10 space-y-8">
+          <h1 className="text-3xl font-bold">{dashboardTitle}</h1>
+          {/* {user && (
+            <p className="text-center text-gray-600 dark:text-gray-300">
+              Logged in as <span className="font-semibold">{user.name}</span> ({user.role})
+            </p>
+          )} */}
+          <p className="text-gray-500 dark:text-gray-400">
+            {new Date().toLocaleDateString("en-US", {
+              weekday: "long",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            })}
+          </p>
+          {/* Overview Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
+            {/* 1. Employees Count */}
+            <Card>
+              <CardHeader className="flex items-center gap-2">
+                <Users className="w-6 h-6 text-green-500" />
+                <CardTitle>No. of Employees</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-2xl font-bold">{overview.employees}</p>
+              </CardContent>
+            </Card>
+
+            {/* 2. Pending Attendance Today */}
+            <Card>
+              <CardHeader className="flex items-center gap-2">
+                <CalendarCheck className="w-6 h-6 text-blue-500" />
+                <CardTitle>Pending Attendance</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-2xl font-bold">
+                  {overview.pendingAttendance}
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* 3. Weekly Average Attendance */}
+            <Card>
+              <CardHeader className="flex items-center gap-2">
+                <Calendar className="w-6 h-6 text-purple-500" />
+                <CardTitle>Weekly Avg Present</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-2xl font-bold">
+                  {overview.weeklyAvgPresent}
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* 4. Pending Leave Requests (optional) */}
+            {user?.role === "admin" && (
+              <Card>
+                <CardHeader className="flex items-center gap-2">
+                  <CalendarDays className="w-6 h-6 text-amber-500" />
+                  <CardTitle>Pending Leave Requests</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-bold">{overview.pendingLeaves}</p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          {children}
+        </div>
       </div>
     </div>
   );

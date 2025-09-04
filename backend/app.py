@@ -410,6 +410,11 @@ def clean_emp_no(emp_no):
         emp_str = emp_str[:-2]
     return emp_str
 
+# Get employee count
+@app.get("/employees/count")
+async def get_employee_count():
+    count = await db.employees.count_documents({})
+    return {"count": count}
 
 # Load employees (Excel upload)
 @app.post("/employees")
