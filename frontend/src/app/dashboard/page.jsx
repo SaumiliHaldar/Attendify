@@ -17,11 +17,72 @@ export default function SidebarLayout({ children }) {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
+  // Load user from localStorage
   useEffect(() => {
     const saved = localStorage.getItem("user");
     if (saved) setUser(JSON.parse(saved));
   }, []);
 
+  // WebSocket for realtime notifications
+  useEffect(() => {
+    if (user?.role === "superadmin") {
+      let wsUrl;
+      if (API_URL.startsWith("https")) {
+        wsUrl = API_URL.replace("https", "wss") + "/notifications/ws";
+      } else {
+        wsUrl = API_URL.replace("http", "ws") + "/notifications/ws";
+      }
+
+      const ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const newNotif = JSON.parse(event.data);
+          setNotifications((prev) => [newNotif, ...prev]);
+        } catch (e) {
+          console.error("Invalid WS message:", e);
+        }
+      };
+
+      ws.onerror = (err) => console.error("WebSocket error:", err);
+
+      return () => ws.close();
+    }
+  }, [user]);
+
+  // Fetch notifications when dropdown opens (optional)
+  useEffect(() => {
+    if (notifOpen && user?.role === "superadmin") {
+      fetch(`${API_URL}/notifications`)
+        .then((res) => res.json())
+        .then((data) => setNotifications(data))
+        .catch((err) => console.error("Error fetching notifications:", err));
+    }
+  }, [notifOpen, user]);
+
+  // Mark single notification as read
+  const markAsRead = async (id) => {
+    try {
+      await fetch(`${API_URL}/notifications/read/${id}`, { method: "POST" });
+      setNotifications((prev) =>
+        prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
+      );
+    } catch (e) {
+      console.error("Error marking as read:", e);
+    }
+  };
+
+  // Mark all notifications as read
+  const markAllAsRead = async () => {
+    try {
+      await fetch(`${API_URL}/notifications/read-all`, { method: "POST" });
+      setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
+    } catch (e) {
+      console.error("Error marking all as read:", e);
+    }
+  };
+
+  // Logout function
   const handleLogout = () => {
     localStorage.removeItem("user");
     setUser(null);
@@ -44,15 +105,9 @@ export default function SidebarLayout({ children }) {
           className="absolute -right-3 top-8 z-50 flex items-center justify-center h-6 w-6 rounded-full bg-neutral-200 dark:bg-neutral-700 shadow-md"
         >
           {open ? (
-            <ChevronLeft
-              size={16}
-              className="text-neutral-700 dark:text-neutral-200"
-            />
+            <ChevronLeft size={16} className="text-neutral-700 dark:text-neutral-200" />
           ) : (
-            <ChevronRight
-              size={16}
-              className="text-neutral-700 dark:text-neutral-200"
-            />
+            <ChevronRight size={16} className="text-neutral-700 dark:text-neutral-200" />
           )}
         </button>
 
@@ -60,108 +115,68 @@ export default function SidebarLayout({ children }) {
         <div>
           {/* Logo */}
           <div className="flex items-center gap-2 p-4">
-            <img
-              src="https://assets.aceternity.com/logo-dark.png"
-              alt="logo"
-              width={30}
-              height={30}
-            />
+            <img src="https://assets.aceternity.com/logo-dark.png" alt="logo" width={30} height={30} />
             {open && <span className="font-semibold">Attendify</span>}
           </div>
 
           {/* Notifications */}
           {user?.role === "superadmin" && (
-            <div ref={notifRef} className="px-2 mt-6">
-              {/* Header row */}
+            <div ref={notifRef} className="relative px-2 mt-6">
               <div
-                className={cn(
-                  "flex items-center p-2 rounded cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
-                  open ? "justify-between" : "justify-center"
-                )}
+                className="flex items-center gap-2 p-2 cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded"
                 onClick={() => setNotifOpen(!notifOpen)}
               >
-                <div
-                  className={cn(
-                    "flex items-center",
-                    open ? "gap-2" : "justify-center w-full"
-                  )}
-                >
-                  <Bell className="w-5 h-5" />
-                  {open && <span>Notifications</span>}
-                </div>
-
-                {/* Right side (dot + arrow when expanded) */}
-                <div className="flex items-center gap-2">
-                  {notifications.some((n) => n.status === "unread") &&
-                    !notifOpen && (
-                      <span className="inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
-                    )}
-                  {open && (
-                    <motion.span
-                      animate={{ rotate: notifOpen ? 90 : 0 }}
-                      className="transition-transform"
-                    >
-                      ▶
-                    </motion.span>
-                  )}
-                </div>
+                <Bell size={20} />
+                {open && <span>Notifications</span>}
               </div>
 
-              {/* Collapsible dropdown */}
+              {notifications.some((n) => n.status === "unread") && !notifOpen && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full animate-ping" />
+              )}
+
               <AnimatePresence>
                 {notifOpen && (
                   <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="mt-2 ml-2 pl-2 border-l border-neutral-300 dark:border-neutral-700 overflow-hidden"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    className="absolute left-14 top-0 w-72 max-h-80 overflow-y-auto bg-white dark:bg-neutral-800 shadow-lg rounded-lg p-3 z-50"
                   >
-                    {/* Header with "Mark all as read" */}
-                    <div className="flex justify-between items-center mb-2 pr-2">
-                      <p className="text-sm font-semibold">Notifications</p>
+                    <div className="flex justify-between items-center mb-2">
+                      <p className="font-semibold">Notifications</p>
                       {notifications.length > 0 && (
                         <button
                           onClick={markAllAsRead}
                           className="text-xs text-blue-500 hover:underline"
                         >
-                          Mark all
+                          Mark all as read
                         </button>
                       )}
                     </div>
 
-                    {/* List of notifications */}
                     {notifications.length === 0 ? (
-                      <p className="text-xs text-gray-500 px-2">
-                        No notifications
-                      </p>
+                      <p className="text-sm text-gray-500">No notifications</p>
                     ) : (
-                      <ul className="space-y-2 pr-2">
-                        {notifications.map((notif) => (
-                          <li
-                            key={notif._id}
-                            className={`p-2 rounded-md text-sm ${
-                              notif.status === "unread"
-                                ? "bg-green-50 dark:bg-green-900/20"
-                                : "bg-neutral-100 dark:bg-neutral-800"
-                            }`}
-                          >
-                            <p>{notif.message}</p>
-                            <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs text-gray-500">
-                                {notif.timestamp}
-                              </span>
-                              {notif.status === "unread" && (
-                                <button
-                                  onClick={() => markAsRead(notif._id)}
-                                  className="text-xs text-blue-500 hover:underline"
-                                >
-                                  Mark as read
-                                </button>
-                              )}
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
+                      notifications.map((notif) => (
+                        <div
+                          key={notif._id}
+                          className={`p-2 mb-2 rounded ${
+                            notif.status === "unread" ? "bg-green-50 dark:bg-green-900/20" : "bg-neutral-100 dark:bg-neutral-700"
+                          }`}
+                        >
+                          <p className="text-sm">{notif.message}</p>
+                          <div className="flex justify-between items-center mt-1">
+                            {notif.status === "unread" && (
+                              <button
+                                onClick={() => markAsRead(notif._id)}
+                                className="text-xs text-blue-500 hover:underline"
+                              >
+                                Mark as read
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))
                     )}
                   </motion.div>
                 )}
@@ -180,7 +195,6 @@ export default function SidebarLayout({ children }) {
                 alt="profile"
                 onClick={() => setDropdownOpen(!dropdownOpen)}
               />
-              {/* Show details only when sidebar is expanded */}
               {open && (
                 <div className="flex flex-col">
                   <span className="text-sm font-semibold">{user.name}</span>
@@ -188,7 +202,6 @@ export default function SidebarLayout({ children }) {
                 </div>
               )}
 
-              {/* Dropdown for Manage Profile + Logout */}
               <AnimatePresence>
                 {dropdownOpen && (
                   <motion.div
@@ -227,7 +240,7 @@ export default function SidebarLayout({ children }) {
         </div>
       </motion.div>
 
-      {/* Main content with Aurora background */}
+      {/* Main content */}
       <div className="flex-1 overflow-y-auto relative">
         <AuroraBackground className="absolute inset-0 -z-10" />
         <div className="relative z-10">{children}</div>
