@@ -71,37 +71,43 @@ export default function SidebarLayout({ children }) {
 
           {/* Notifications */}
           {user?.role === "superadmin" && (
-            <div ref={notifRef} className="relative px-2 mt-6">
+            <div className="px-2 mt-6">
+              {/* Bell Button */}
               <div
-                className="flex items-center gap-2 p-2 cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded"
+                className={cn(
+                  "flex items-center p-2 rounded cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
+                  open ? "justify-start gap-2" : "justify-center"
+                )}
                 onClick={() => setNotifOpen(!notifOpen)}
               >
                 <Bell size={20} />
                 {open && <span>Notifications</span>}
               </div>
-              {notifications.some((n) => n.status === "unread") &&
-                !notifOpen && (
-                  <span className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full animate-ping" />
-                )}
+
+              {/* Dropdown inside sidebar */}
               <AnimatePresence>
                 {notifOpen && (
                   <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
-                    className="absolute left-14 top-0 w-72 max-h-80 overflow-y-auto bg-white dark:bg-neutral-800 shadow-lg rounded-lg p-3 z-50"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="ml-2 mt-2 overflow-hidden"
                   >
                     {notifications.length === 0 ? (
-                      <p className="text-sm text-gray-500">No notifications</p>
+                      <p className="text-xs text-gray-500 px-2">
+                        No notifications
+                      </p>
                     ) : (
-                      notifications.map((notif) => (
-                        <div
-                          key={notif._id}
-                          className="p-2 mb-2 rounded bg-neutral-100 dark:bg-neutral-700"
-                        >
-                          <p className="text-sm">{notif.message}</p>
-                        </div>
-                      ))
+                      <ul className="space-y-2">
+                        {notifications.map((notif) => (
+                          <li
+                            key={notif._id}
+                            className="text-sm p-2 rounded bg-neutral-100 dark:bg-neutral-700"
+                          >
+                            {notif.message}
+                          </li>
+                        ))}
+                      </ul>
                     )}
                   </motion.div>
                 )}
@@ -113,22 +119,32 @@ export default function SidebarLayout({ children }) {
         {/* Bottom (Profile/Login) */}
         <div className="p-4">
           {user ? (
-            <div className="relative">
+            <div className="flex items-center gap-3">
               <img
                 src={user.picture || "/default-avatar.png"}
                 className="h-10 w-10 rounded-full border cursor-pointer"
                 alt="profile"
                 onClick={() => setDropdownOpen(!dropdownOpen)}
               />
+              {/* Show details only when sidebar is expanded */}
+              {open && (
+                <div className="flex flex-col">
+                  <span className="text-sm font-semibold">{user.name}</span>
+                  <span className="text-xs text-gray-500">{user.role}</span>
+                </div>
+              )}
+
+              {/* Dropdown for Manage Profile + Logout */}
               <AnimatePresence>
                 {dropdownOpen && (
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 10 }}
-                    className="absolute bottom-14 left-0 w-56 bg-white dark:bg-neutral-900 shadow-lg rounded-lg p-4 z-50"
+                    className="absolute bottom-14 left-4 w-56 bg-white dark:bg-neutral-900 shadow-lg rounded-lg p-4 z-50"
                   >
                     <p className="font-semibold mb-2">{user.name}</p>
+                    <p className="text-xs text-gray-500 mb-4">{user.role}</p>
                     <a
                       href="/profile"
                       className="block w-full text-center py-2 rounded-md bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 mb-2"
