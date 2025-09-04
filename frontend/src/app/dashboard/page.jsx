@@ -71,40 +71,94 @@ export default function SidebarLayout({ children }) {
 
           {/* Notifications */}
           {user?.role === "superadmin" && (
-            <div className="px-2 mt-6">
-              {/* Bell Button */}
+            <div ref={notifRef} className="px-2 mt-6">
+              {/* Header row */}
               <div
                 className={cn(
                   "flex items-center p-2 rounded cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
-                  open ? "justify-start gap-2" : "justify-center"
+                  open ? "justify-between" : "justify-center"
                 )}
                 onClick={() => setNotifOpen(!notifOpen)}
               >
-                <Bell size={20} />
-                {open && <span>Notifications</span>}
+                <div
+                  className={cn(
+                    "flex items-center",
+                    open ? "gap-2" : "justify-center w-full"
+                  )}
+                >
+                  <Bell className="w-5 h-5" />
+                  {open && <span>Notifications</span>}
+                </div>
+
+                {/* Right side (dot + arrow when expanded) */}
+                <div className="flex items-center gap-2">
+                  {notifications.some((n) => n.status === "unread") &&
+                    !notifOpen && (
+                      <span className="inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
+                    )}
+                  {open && (
+                    <motion.span
+                      animate={{ rotate: notifOpen ? 90 : 0 }}
+                      className="transition-transform"
+                    >
+                      ▶
+                    </motion.span>
+                  )}
+                </div>
               </div>
 
-              {/* Dropdown inside sidebar */}
+              {/* Collapsible dropdown */}
               <AnimatePresence>
                 {notifOpen && (
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
                     exit={{ opacity: 0, height: 0 }}
-                    className="ml-2 mt-2 overflow-hidden"
+                    className="mt-2 ml-2 pl-2 border-l border-neutral-300 dark:border-neutral-700 overflow-hidden"
                   >
+                    {/* Header with "Mark all as read" */}
+                    <div className="flex justify-between items-center mb-2 pr-2">
+                      <p className="text-sm font-semibold">Notifications</p>
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={markAllAsRead}
+                          className="text-xs text-blue-500 hover:underline"
+                        >
+                          Mark all
+                        </button>
+                      )}
+                    </div>
+
+                    {/* List of notifications */}
                     {notifications.length === 0 ? (
                       <p className="text-xs text-gray-500 px-2">
                         No notifications
                       </p>
                     ) : (
-                      <ul className="space-y-2">
+                      <ul className="space-y-2 pr-2">
                         {notifications.map((notif) => (
                           <li
                             key={notif._id}
-                            className="text-sm p-2 rounded bg-neutral-100 dark:bg-neutral-700"
+                            className={`p-2 rounded-md text-sm ${
+                              notif.status === "unread"
+                                ? "bg-green-50 dark:bg-green-900/20"
+                                : "bg-neutral-100 dark:bg-neutral-800"
+                            }`}
                           >
-                            {notif.message}
+                            <p>{notif.message}</p>
+                            <div className="flex justify-between items-center mt-1">
+                              <span className="text-xs text-gray-500">
+                                {notif.timestamp}
+                              </span>
+                              {notif.status === "unread" && (
+                                <button
+                                  onClick={() => markAsRead(notif._id)}
+                                  className="text-xs text-blue-500 hover:underline"
+                                >
+                                  Mark as read
+                                </button>
+                              )}
+                            </div>
                           </li>
                         ))}
                       </ul>
