@@ -27,6 +27,7 @@ export default function Dashboard({ children }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const sidebarRef = useRef(null);
   const notifRef = useRef(null);
   const profileRef = useRef(null);
@@ -87,21 +88,37 @@ export default function Dashboard({ children }) {
 
   // Fetch employee count
   useEffect(() => {
-  const fetchEmployeeCount = async () => {
-    try {
-      const res = await fetch(`${API_URL}/employees/count`);
-      const data = await res.json();
-      setOverview((prev) => ({ ...prev, employees: data.count }));
-    } catch (err) {
-      console.error("Error fetching employees count:", err);
-    }
-  };
+    const fetchEmployeeCount = async () => {
+      try {
+        const res = await fetch(`${API_URL}/employees/count`);
+        const data = await res.json();
+        setOverview((prev) => ({ ...prev, employees: data.count }));
+      } catch (err) {
+        console.error("Error fetching employees count:", err);
+      }
+    };
 
-  fetchEmployeeCount();
-  const interval = setInterval(fetchEmployeeCount, 5000);
-  return () => clearInterval(interval);
-}, [API_URL]);
+    fetchEmployeeCount();
+    const interval = setInterval(fetchEmployeeCount, 5000);
+    return () => clearInterval(interval);
+  }, [API_URL]);
 
+  // Fetch holidays
+  useEffect(() => {
+    const fetchHolidays = async () => {
+      try {
+        const res = await fetch(`${API_URL}/holidays`);
+        const data = await res.json();
+        if (Array.isArray(data.holidays)) {
+          setHolidays(data.holidays);
+        }
+      } catch (err) {
+        console.error("Error fetching holidays:", err);
+      }
+    };
+
+    fetchHolidays();
+  }, [API_URL]);
 
   const markAsRead = async (id) => {
     try {
@@ -380,6 +397,37 @@ export default function Dashboard({ children }) {
                 </p>
               </CardContent>
             </Card>
+
+            {/* 4. Upcoming Holidays (static, full-row width) */}
+            {!user && (
+              <Card className="w-full max-w-3xl mx-auto">
+                <CardHeader className="flex items-center gap-2">
+                  <CalendarDays className="w-6 h-6 text-red-500" />
+                  <CardTitle>Upcoming Holidays</CardTitle>
+                </CardHeader>
+                <CardContent className="max-h-72 overflow-y-auto">
+                  {holidays.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      No upcoming holidays
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
+                      {holidays.map((h, idx) => (
+                        <li
+                          key={idx}
+                          className="py-3 flex items-center justify-between gap-3"
+                        >
+                          <span className="font-medium truncate">{h.name}</span>
+                          <span className="text-sm text-gray-500">
+                            {h.date}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {children}
