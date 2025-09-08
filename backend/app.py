@@ -864,63 +864,18 @@ async def upload_holidays(file: UploadFile = File(...)):
         os.remove(temp_path)
 
 
-# Shift management
-# @app.post("/shift")
-# async def assign_shift(request: Request, authorization: str = Header(None)):
-#     body = await request.json()
+# Fetch holidays
+@app.get("/holidays")
+async def get_holidays():
+    holidays = []
+    cursor = db["holidays"].find().sort("date", 1)
+    async for doc in cursor:
+        holidays.append({
+            "date": datetime.strptime(doc["date"], "%Y-%m-%d").strftime("%d-%m-%Y"),
+            "name": doc["name"]
+        })
+    return {"holidays": holidays}
 
-#     emp_no = body.get("emp_no")
-#     month = body.get("month")  # "YYYY-MM"
-#     shift = body.get("shift", {})
-
-#     if not all([emp_no, month, shift]):
-#         raise HTTPException(status_code=400, detail="Missing required fields")
-
-#     # Get user session from header
-#     if not authorization:
-#         raise HTTPException(status_code=403, detail="Authorization header missing")
-
-#     user_email = authorization
-#     session = await redis_get(user_email)
-#     if not session:
-#         raise HTTPException(status_code=403, detail="Session expired or invalid")
-
-#     # Fix: Handle the Redis response format
-#     if isinstance(session, dict) and 'result' in session:
-#         session_data = json.loads(session['result'])
-#     elif isinstance(session, str):
-#         session_data = json.loads(session)
-#     else:
-#         raise HTTPException(status_code=403, detail="Invalid session format")
-
-#     submitted_by = session_data.get("email")
-
-#     # Get employee name
-#     employee = await db["employees"].find_one({"emp_no": emp_no})
-#     if not employee:
-#         raise HTTPException(status_code=404, detail="Employee not found")
-
-#     name = employee.get("name", "")
-
-#     # Build shift document
-#     shift_doc = {
-#         "emp_no": emp_no,
-#         "name": name,
-#         "month": month,
-#         "shift": shift,
-#         "updated_by": submitted_by,
-#         "updated_at": datetime.now(kolkata_tz).isoformat()
-#     }
-
-#     shift_collection = db["shifts"]
-#     existing = await shift_collection.find_one({"emp_no": emp_no, "month": month})
-
-#     if existing:
-#         await shift_collection.replace_one({"_id": existing["_id"]}, shift_doc)
-#     else:
-#         await shift_collection.insert_one(shift_doc)
-
-#     return {"message": f"Shift updated for {name} ({emp_no}) for {month}."}
 
 # Shift management
 @app.post("/shift")
