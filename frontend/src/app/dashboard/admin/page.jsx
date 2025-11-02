@@ -21,7 +21,7 @@ export default function AdminDashboard() {
               Add, view, and edit employee records.
             </p>
             <a
-              href="/dashboard/admin/employees"
+              href="/dashboard/employees"
               className="text-blue-600 hover:underline text-sm"
             >
               Go to Employee Management →
@@ -44,25 +44,6 @@ export default function AdminDashboard() {
               className="text-blue-600 hover:underline text-sm"
             >
               View Attendance →
-            </a>
-          </CardContent>
-        </Card>
-
-        {/* Leave Requests */}
-        <Card>
-          <CardHeader className="flex items-center gap-2">
-            <ClipboardList className="w-6 h-6 text-purple-500" />
-            <CardTitle>Leave Requests</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-500">
-              Approve or reject pending leave applications.
-            </p>
-            <a
-              href="/dashboard/admin/leaves"
-              className="text-blue-600 hover:underline text-sm"
-            >
-              Manage Leaves →
             </a>
           </CardContent>
         </Card>
