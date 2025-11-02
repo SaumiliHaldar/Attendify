@@ -20,6 +20,69 @@ import { AuroraBackground } from "@/components/ui/aurora-background";
 import { NavbarButton } from "@/components/ui/resizable-navbar";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import SuperadminDashboard from "@/app/dashboard/superadmin/page";
+import AdminDashboard from "@/app/dashboard/admin/page";
+
+/* ✅ Add this helper component here — right above Dashboard() */
+function LiveClockCard() {
+  const [time, setTime] = React.useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const hours = time.getHours();
+  let currentShift = "";
+  if (hours >= 6 && hours < 14) currentShift = "Morning Shift (6 AM – 2 PM)";
+  else if (hours >= 14 && hours < 22)
+    currentShift = "Evening Shift (2 PM – 10 PM)";
+  else currentShift = "Night Shift (10 PM – 6 AM)";
+
+  return (
+    <div className="space-y-4">
+      {/* Live Clock */}
+      <div className="flex items-center justify-between bg-neutral-100 dark:bg-neutral-800 p-4 rounded-lg">
+        <div>
+          <p className="text-sm text-gray-500">Current Time</p>
+          <p className="text-2xl font-semibold text-blue-600">
+            {time.toLocaleTimeString()}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-sm text-gray-500">Date</p>
+          <p className="text-md font-medium">
+            {time.toLocaleDateString("en-US", {
+              weekday: "short",
+              month: "short",
+              day: "numeric",
+            })}
+          </p>
+        </div>
+      </div>
+
+      {/* Shift Info */}
+      <div className="p-4 rounded-lg bg-neutral-100 dark:bg-neutral-800">
+        <p className="text-sm font-medium mb-1">🕒 Current Shift</p>
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          {currentShift}
+        </p>
+      </div>
+
+      {/* Static Info */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="p-4 rounded-lg bg-neutral-100 dark:bg-neutral-800">
+          <p className="text-sm font-medium mb-1">🏢 Operation Mode</p>
+          <p className="text-xs text-gray-500">24×7 - Shift Based</p>
+        </div>
+        <div className="p-4 rounded-lg bg-neutral-100 dark:bg-neutral-800">
+          <p className="text-sm font-medium mb-1">📍 Location</p>
+          <p className="text-xs text-gray-500">Kharagpur - 721301, Paschim Medinipur</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Dashboard({ children }) {
   const [open, setOpen] = useState(true);
@@ -151,8 +214,8 @@ export default function Dashboard({ children }) {
     user?.role === "superadmin"
       ? "Superadmin Dashboard"
       : user?.role === "admin"
-      ? "Admin Dashboard"
-      : "Dashboard";
+        ? "Admin Dashboard"
+        : "Dashboard";
 
   const [overview, setOverview] = useState({
     employees: 0,
@@ -400,37 +463,66 @@ export default function Dashboard({ children }) {
 
             {/* 4. Upcoming Holidays (static, full-row width) */}
             {!user && (
-              <Card className="w-full max-w-3xl mx-auto">
-                <CardHeader className="flex items-center gap-2">
-                  <CalendarDays className="w-6 h-6 text-red-500" />
-                  <CardTitle>Upcoming Holidays</CardTitle>
-                </CardHeader>
-                <CardContent className="max-h-72 overflow-y-auto">
-                  {holidays.length === 0 ? (
-                    <p className="text-sm text-gray-500">
-                      No upcoming holidays
-                    </p>
-                  ) : (
-                    <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                      {holidays.map((h, idx) => (
-                        <li
-                          key={idx}
-                          className="py-3 flex items-center justify-between gap-3"
-                        >
-                          <span className="font-medium truncate">{h.name}</span>
-                          <span className="text-sm text-gray-500">
-                            {h.date}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </CardContent>
-              </Card>
+              <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <Card className="w-full max-w-3xl mx-auto">
+                  <CardHeader className="flex items-center gap-2">
+                    <CalendarDays className="w-6 h-6 text-red-500" />
+                    <CardTitle>Holidays List</CardTitle>
+                  </CardHeader>
+                  <CardContent className="max-h-72 overflow-y-auto">
+                    {holidays.length === 0 ? (
+                      <p className="text-sm text-gray-500">
+                        No upcoming holidays
+                      </p>
+                    ) : (
+                      <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
+                        {holidays.map((h, idx) => (
+                          <li
+                            key={idx}
+                            className="py-3 flex items-center justify-between gap-3"
+                          >
+                            <span className="font-medium truncate">{h.name}</span>
+                            <span className="text-sm text-gray-500">
+                              {h.date}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </CardContent>
+                </Card>
+
+
+                <Card className="col-span-2">
+                  <CardHeader className="flex items-center gap-2">
+                    <Calendar className="w-6 h-6 text-blue-500" />
+                    <CardTitle>Office Info</CardTitle>
+                  </CardHeader>
+
+                  <CardContent className="space-y-6">
+                    {/* Live Clock */}
+                    <LiveClockCard />
+                  </CardContent>
+                </Card>
+
+              </div>
             )}
           </div>
 
-          {children}
+          {/* {children} */}
+
+          {user ? (
+            user.role === "superadmin" ? (
+              <SuperadminDashboard />
+            ) : user.role === "admin" ? (
+              <AdminDashboard />
+            ) : null
+          ) : (
+            <>
+            </>
+          )}
+
+
         </div>
       </div>
     </div>
