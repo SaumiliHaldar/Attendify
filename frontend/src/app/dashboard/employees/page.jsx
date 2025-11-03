@@ -54,14 +54,13 @@ export default function Employees() {
   const [employees, setEmployees] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [search, setSearch] = useState("");
-  const [type, setType] = useState("all");
+  const [empType, setEmpType] = useState("all");
   const [page, setPage] = useState(0);
   const [limit] = useState(10);
   const [total, setTotal] = useState(0);
 
   const totalPages = Math.ceil(total / limit);
 
-  // Fetch logged-in user
   useEffect(() => {
     const saved = localStorage.getItem("user");
     if (saved) setUser(JSON.parse(saved));
@@ -69,60 +68,49 @@ export default function Employees() {
 
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    
-  // ✅ Fetch Employees (safe version)
-const fetchEmployees = async () => {
-  setLoading(true);
-  try {
-    const params = new URLSearchParams({
-      search,
-      type,
-      skip: (page * limit).toString(),
-      limit: limit.toString(),
-    });
 
-    const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+  // Fetch Employees (auto-refresh)
+  const fetchEmployees = async () => {
+    if (!token) return;
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        search: search || "",
+        emp_type: empType === "all" ? "" : empType,
+        skip: (page * limit).toString(),
+        limit: limit.toString(),
+      });
 
-    const data = await res.json();
+      const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
+        headers: { Authorization: token },
+      });
+      const data = await res.json();
 
-    if (res.ok) {
-      // Normalize API response to an array
-      let list = [];
-
-      if (Array.isArray(data.items)) {
-        list = data.items;
-      } else if (Array.isArray(data)) {
-        list = data;
-      } else if (data.items && typeof data.items === "object") {
-        list = [data.items];
-      } else if (data && typeof data === "object" && data.emp_no) {
-        list = [data];
+      if (res.ok) {
+        setEmployees(data.employees || []);
+        setTotal(data.pagination?.total || 0);
+      } else {
+        toast.error(data.detail || "Failed to fetch employees");
       }
-
-      setEmployees(list);
-      setTotal(data.total || list.length || 0);
-    } else {
-      toast.error(data.detail || "Failed to fetch employees");
-      setEmployees([]);
+    } catch (err) {
+      console.error(err);
+      toast.error("Network error");
+    } finally {
+      setLoading(false);
     }
-  } catch (e) {
-    toast.error("Network error");
-    setEmployees([]);
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
-
+  // Initial fetch & refetch when filters/pagination change
   useEffect(() => {
     if (token) fetchEmployees();
-  }, [page, type]);
+  }, [page, empType]);
 
-  // ✅ Add employee manually
+  // Refetch when token becomes available
+  useEffect(() => {
+    if (token) fetchEmployees();
+  }, [token]);
+
+  // Add Employee
   const handleAddEmployee = async () => {
     if (!form.emp_no || !form.name || !form.designation)
       return toast.error("Please fill all fields");
@@ -133,28 +121,31 @@ const fetchEmployees = async () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: token,
         },
         body: JSON.stringify(form),
       });
 
       const data = await res.json();
       if (res.ok) {
-        toast.success("Employee added successfully!");
+        toast.success(data.message || "Employee added successfully!");
         setAddOpen(false);
         setForm({ emp_no: "", name: "", designation: "", type: "regular" });
-        fetchEmployees();
+
+        // Instantly add new employee in UI
+        setEmployees((prev) => [data.employee || form, ...prev]);
+        setTotal((prev) => prev + 1);
       } else {
         toast.error(data.detail || "Failed to add employee");
       }
-    } catch (e) {
+    } catch {
       toast.error("Network error");
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ Upload Excel
+  // Upload Excel (auto refresh)
   const handleUpload = async () => {
     if (!file) return toast.error("Please select a file");
 
@@ -165,23 +156,26 @@ const fetchEmployees = async () => {
 
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: token },
         body: formData,
       });
 
       const data = await res.json();
 
       if (res.ok) {
-        toast.success("File uploaded successfully!");
+        toast.success(
+          data.message ||
+            `Uploaded successfully (Added: ${data.summary?.added || 0}, Updated: ${
+              data.summary?.updated || 0
+            })`
+        );
         setUploadOpen(false);
         setFile(null);
-        fetchEmployees();
+        fetchEmployees(); // 🔁 Refresh table
       } else {
         toast.error(data.detail || "Upload failed");
       }
-    } catch (e) {
+    } catch {
       toast.error("Network error");
     } finally {
       setLoading(false);
@@ -198,7 +192,7 @@ const fetchEmployees = async () => {
         API_URL={API_URL}
       />
 
-      <div className="flex-1">
+      <div className="flex-1 w-full">
         <AuroraBackground>
           <motion.div
             initial={{ opacity: 0, y: 30 }}
@@ -217,7 +211,7 @@ const fetchEmployees = async () => {
               Employee Management
             </motion.h2>
 
-            {/* Header Card */}
+            {/* Header */}
             <Card className="w-full shadow-lg bg-white border border-gray-200 mb-6">
               <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -226,7 +220,7 @@ const fetchEmployees = async () => {
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-                  {/* Upload Excel */}
+                  {/* Upload */}
                   <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
                     <DialogTrigger asChild>
                       <Button variant="outline" className="gap-1 w-full sm:w-auto">
@@ -256,7 +250,7 @@ const fetchEmployees = async () => {
                     </DialogContent>
                   </Dialog>
 
-                  {/* Add Employee */}
+                  {/* Add */}
                   <Dialog open={addOpen} onOpenChange={setAddOpen}>
                     <DialogTrigger asChild>
                       <Button className="gap-1 w-full sm:w-auto">
@@ -286,10 +280,7 @@ const fetchEmployees = async () => {
                           placeholder="Designation"
                           value={form.designation}
                           onChange={(e) =>
-                            setForm({
-                              ...form,
-                              designation: e.target.value,
-                            })
+                            setForm({ ...form, designation: e.target.value })
                           }
                         />
                         <select
@@ -302,11 +293,7 @@ const fetchEmployees = async () => {
                           <option value="regular">Regular</option>
                           <option value="apprentice">Apprentice</option>
                         </select>
-                        <Button
-                          onClick={handleAddEmployee}
-                          disabled={loading}
-                          className="mt-2"
-                        >
+                        <Button onClick={handleAddEmployee} disabled={loading}>
                           {loading ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
@@ -320,7 +307,7 @@ const fetchEmployees = async () => {
               </CardHeader>
             </Card>
 
-            {/* Table Section */}
+            {/* Table */}
             <Card className="flex-1 flex flex-col overflow-hidden w-full">
               <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div className="flex flex-wrap gap-2 w-full">
@@ -330,7 +317,7 @@ const fetchEmployees = async () => {
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
-                  <Select value={type} onValueChange={setType}>
+                  <Select value={empType} onValueChange={setEmpType}>
                     <SelectTrigger className="w-full sm:w-[180px]">
                       <SelectValue placeholder="Filter by type" />
                     </SelectTrigger>
@@ -340,11 +327,7 @@ const fetchEmployees = async () => {
                       <SelectItem value="apprentice">Apprentice</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button
-                    onClick={fetchEmployees}
-                    variant="outline"
-                    className="w-full sm:w-auto"
-                  >
+                  <Button onClick={fetchEmployees} variant="outline">
                     Search
                   </Button>
                 </div>
@@ -360,11 +343,11 @@ const fetchEmployees = async () => {
                     No employees found.
                   </div>
                 ) : (
-                  <motion.div layout className="h-full overflow-x-auto">
-                    <Table className="min-w-[600px] text-sm">
+                  <motion.div layout className="overflow-x-auto w-full">
+                    <Table className="min-w-[600px] text-sm w-full">
                       <TableHeader>
                         <TableRow className="bg-gray-100 sticky top-0">
-                          <TableHead className="w-24">Emp No</TableHead>
+                          <TableHead>Emp No</TableHead>
                           <TableHead>Name</TableHead>
                           <TableHead>Designation</TableHead>
                           <TableHead>Type</TableHead>
@@ -390,8 +373,8 @@ const fetchEmployees = async () => {
                             <TableCell>
                               {emp.created_at
                                 ? new Date(emp.created_at).toLocaleDateString(
-                                  "en-IN"
-                                )
+                                    "en-IN"
+                                  )
                                 : "-"}
                             </TableCell>
                           </motion.tr>
@@ -405,8 +388,7 @@ const fetchEmployees = async () => {
               {/* Pagination */}
               <div className="flex flex-col sm:flex-row justify-between items-center gap-2 p-4 border-t bg-gray-50">
                 <div className="text-sm text-gray-600">
-                  Showing {page * limit + 1}–
-                  {Math.min((page + 1) * limit, total)} of {total}
+                  Showing {page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total}
                 </div>
                 <div className="flex gap-2">
                   <Button
