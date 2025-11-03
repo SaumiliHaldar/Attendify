@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
+import Sidebar from "@/components/layouts/Sidebar";
 import { AuroraBackground } from "@/components/ui/aurora-background";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -13,14 +14,30 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Users, Upload, Plus, Loader2 } from "lucide-react";
+import { Upload, Plus, Loader2, RefreshCcw } from "lucide-react";
 import { toast, Toaster } from "sonner";
 import { API_URL } from "@/lib/api";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 
 export default function Employees() {
   const [addOpen, setAddOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [employees, setEmployees] = useState([]);
   const [file, setFile] = useState(null);
   const [form, setForm] = useState({
     emp_no: "",
@@ -29,14 +46,61 @@ export default function Employees() {
     type: "regular",
   });
 
+  const [user, setUser] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+
+  const [search, setSearch] = useState("");
+  const [type, setType] = useState("all");
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+  const limit = 25;
+
+  const fetchEmployees = useCallback(async () => {
+    setLoading(true);
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    try {
+      const query = new URLSearchParams({
+        limit,
+        skip: page * limit,
+        ...(type !== "all" ? { emp_type: type } : {}),
+        ...(search ? { search } : {}),
+      });
+
+      const res = await fetch(`${API_URL}/employees?${query}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setEmployees(data.employees || []);
+        setTotal(data.pagination?.total || 0);
+      } else toast.error(data.detail || "Failed to load employees");
+    } catch (err) {
+      console.error("Error fetching employees:", err);
+      toast.error("Network error while fetching employees");
+    } finally {
+      setLoading(false);
+    }
+  }, [search, type, page]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("user");
+    if (saved) setUser(JSON.parse(saved));
+  }, []);
+
+  useEffect(() => {
+    const delay = setTimeout(fetchEmployees, 400);
+    return () => clearTimeout(delay);
+  }, [fetchEmployees]);
+
+  const totalPages = Math.ceil(total / limit);
+
   const handleAddEmployee = async () => {
     setLoading(true);
     const token = localStorage.getItem("token");
-    if (!token) {
-      toast.error("Unauthorized. Please log in again.");
-      setLoading(false);
-      return;
-    }
+    if (!token) return toast.error("Unauthorized.");
 
     try {
       const res = await fetch(`${API_URL}/employees/manual`, {
@@ -47,16 +111,15 @@ export default function Employees() {
         },
         body: JSON.stringify(form),
       });
-      const data = await res.json();
 
+      const data = await res.json();
       if (res.ok) {
         toast.success("Employee added successfully!");
         setAddOpen(false);
         setForm({ emp_no: "", name: "", designation: "", type: "regular" });
-      } else {
-        toast.error(data.detail || "Failed to add employee");
-      }
-    } catch (e) {
+        fetchEmployees();
+      } else toast.error(data.detail || "Failed to add employee");
+    } catch {
       toast.error("Network error");
     } finally {
       setLoading(false);
@@ -65,76 +128,67 @@ export default function Employees() {
 
   const handleUpload = async () => {
     if (!file) return toast.error("Please select a file");
-
     setLoading(true);
     const token = localStorage.getItem("token");
-    if (!token) {
-      toast.error("Unauthorized. Please log in again.");
-      setLoading(false);
-      return;
-    }
+    if (!token) return toast.error("Unauthorized.");
 
     try {
       const formData = new FormData();
       formData.append("file", file);
-
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
-
       const data = await res.json();
 
       if (res.ok) {
         toast.success("File uploaded successfully!");
         setUploadOpen(false);
         setFile(null);
-      } else {
-        toast.error(data.detail || "Upload failed");
-      }
-    } catch (e) {
+        fetchEmployees();
+      } else toast.error(data.detail || "Upload failed");
+    } catch {
       toast.error("Network error");
     } finally {
       setLoading(false);
     }
   };
 
-
   return (
-    <AuroraBackground>
-      <motion.div
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6 }}
-        className="relative z-10 min-h-screen p-8 flex flex-col items-center"
-      >
-        <Toaster position="top-right" richColors closeButton />
+    <div className="flex h-screen overflow-hidden">
+      {/* Sidebar */}
+      <Sidebar
+        user={user}
+        setUser={setUser}
+        notifications={notifications}
+        setNotifications={setNotifications}
+        API_URL={API_URL}
+      />
 
-        <motion.h2
-          className="text-3xl font-semibold mb-8"
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-        >
-          Employee Management
-        </motion.h2>
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col h-full">
+        <AuroraBackground>
+          <Toaster position="top-right" richColors closeButton />
 
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          transition={{ type: "spring", stiffness: 200, damping: 15 }}
-        >
-          <Card className="max-w-3xl w-full shadow-lg bg-white border border-gray-200">
-            <CardHeader className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Users className="w-6 h-6 text-green-600" />
-                <CardTitle>Employees</CardTitle>
-              </div>
+          <motion.div
+            className="relative z-10 flex flex-col p-6 gap-6 w-full h-full"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+          >
+            {/* HEADER */}
+            <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+              <motion.h2
+                className="text-3xl font-bold tracking-tight"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                Employee Management
+              </motion.h2>
 
               <div className="flex gap-2">
-                {/* Upload Excel Modal */}
+                {/* Upload Modal */}
                 <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
                   <DialogTrigger asChild>
                     <Button variant="outline" className="gap-1">
@@ -162,7 +216,7 @@ export default function Employees() {
                   </DialogContent>
                 </Dialog>
 
-                {/* Add Employee Modal */}
+                {/* Add Modal */}
                 <Dialog open={addOpen} onOpenChange={setAddOpen}>
                   <DialogTrigger asChild>
                     <Button className="gap-1">
@@ -171,7 +225,7 @@ export default function Employees() {
                   </DialogTrigger>
                   <DialogContent>
                     <DialogHeader>
-                      <DialogTitle>Add New Employee</DialogTitle>
+                      <DialogTitle>Add Employee</DialogTitle>
                     </DialogHeader>
                     <div className="flex flex-col gap-3">
                       <Input
@@ -195,21 +249,19 @@ export default function Employees() {
                           setForm({ ...form, designation: e.target.value })
                         }
                       />
-                      <select
-                        className="rounded-md border border-gray-300 p-2 text-gray-700"
+                      <Select
                         value={form.type}
-                        onChange={(e) =>
-                          setForm({ ...form, type: e.target.value })
-                        }
+                        onValueChange={(v) => setForm({ ...form, type: v })}
                       >
-                        <option value="regular">Regular</option>
-                        <option value="apprentice">Apprentice</option>
-                      </select>
-                      <Button
-                        onClick={handleAddEmployee}
-                        disabled={loading}
-                        className="mt-2"
-                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="regular">Regular</SelectItem>
+                          <SelectItem value="apprentice">Apprentice</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button onClick={handleAddEmployee} disabled={loading}>
                         {loading ? (
                           <Loader2 className="w-4 h-4 animate-spin" />
                         ) : (
@@ -220,29 +272,127 @@ export default function Employees() {
                   </DialogContent>
                 </Dialog>
               </div>
-            </CardHeader>
+            </div>
 
-            <CardContent>
-              <motion.p
-                className="text-gray-600 mb-2"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.3 }}
-              >
-                Manage, view, and add employees in the system.
-              </motion.p>
+            {/* TABLE SECTION */}
+            <Card className="flex flex-col flex-1 border border-gray-200 shadow-sm bg-white/70 backdrop-blur">
+              <CardHeader className="flex flex-col md:flex-row justify-between items-center gap-3">
+                <div className="flex flex-col sm:flex-row gap-3 w-full">
+                  <Input
+                    placeholder="Search by name or designation..."
+                    className="flex-1"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                  <Select value={type} onValueChange={setType}>
+                    <SelectTrigger className="w-[160px]">
+                      <SelectValue placeholder="Filter by Type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="regular">Regular</SelectItem>
+                      <SelectItem value="apprentice">Apprentice</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    className="gap-2"
+                    onClick={fetchEmployees}
+                    disabled={loading}
+                  >
+                    <RefreshCcw className="w-4 h-4" /> Refresh
+                  </Button>
+                </div>
+              </CardHeader>
 
-              <motion.p
-                className="text-sm text-gray-500"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.4 }}
-              >
-              </motion.p>
-            </CardContent>
-          </Card>
-        </motion.div>
-      </motion.div>
-    </AuroraBackground>
-  )
+              {/* Scrollable Table */}
+              <CardContent className="flex-1 overflow-auto p-0">
+                {loading ? (
+                  <div className="flex justify-center items-center h-full">
+                    <Loader2 className="animate-spin w-8 h-8 text-gray-400" />
+                  </div>
+                ) : employees.length === 0 ? (
+                  <div className="flex justify-center items-center h-full text-gray-500">
+                    No employees found.
+                  </div>
+                ) : (
+                  <motion.div layout className="min-h-full overflow-x-auto">
+                    <Table className="min-w-full text-sm">
+                      <TableHeader>
+                        <TableRow className="bg-gray-100 sticky top-0">
+                          <TableHead>Emp No</TableHead>
+                          <TableHead>Name</TableHead>
+                          <TableHead>Designation</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Created At</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {employees.map((emp, idx) => (
+                          <motion.tr
+                            key={emp.emp_no || idx}
+                            layout
+                            whileHover={{
+                              scale: 1.01,
+                              backgroundColor: "#f9fafb",
+                            }}
+                            transition={{
+                              type: "spring",
+                              stiffness: 200,
+                              damping: 15,
+                            }}
+                            className="border-b cursor-pointer"
+                          >
+                            <TableCell>{emp.emp_no}</TableCell>
+                            <TableCell className="font-medium">
+                              {emp.name}
+                            </TableCell>
+                            <TableCell>{emp.designation}</TableCell>
+                            <TableCell className="capitalize">
+                              {emp.type}
+                            </TableCell>
+                            <TableCell>
+                              {new Date(emp.created_at).toLocaleDateString(
+                                "en-IN"
+                              )}
+                            </TableCell>
+                          </motion.tr>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </motion.div>
+                )}
+              </CardContent>
+
+              {/* PAGINATION */}
+              <div className="flex justify-between items-center p-4 border-t bg-gray-50">
+                <div className="text-sm text-gray-600">
+                  Showing {page * limit + 1}–
+                  {Math.min((page + 1) * limit, total)} of {total}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page === 0}
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page + 1 >= totalPages}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        </AuroraBackground>
+      </div>
+    </div>
+  );
 }
