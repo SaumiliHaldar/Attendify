@@ -511,6 +511,9 @@ async def add_employee_manual(request: Request, authorization: str = Header(None
     # Check authentication
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    if authorization.startswith("Bearer "):
+        authorization = authorization.split("Bearer ")[1].strip()
 
     # Verify session exists in Redis
     session = await redis_get(authorization)
@@ -684,6 +687,9 @@ async def update_employee(
     # Check authentication
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    if authorization.startswith("Bearer "):
+        authorization = authorization.split("Bearer ")[1].strip()
 
     session = await redis_get(authorization)
     if not session:
@@ -774,6 +780,9 @@ async def delete_employee(
     # Check authentication
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    if authorization.startswith("Bearer "):
+        authorization = authorization.split("Bearer ")[1].strip()
 
     session = await redis_get(authorization)
     if not session:
@@ -892,6 +901,9 @@ async def assign_shift(request: Request, authorization: str = Header(None)):
     # Get user session from header
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    if authorization.startswith("Bearer "):
+        authorization = authorization.split("Bearer ")[1].strip()
 
     user_email = authorization
     session = await redis_get(user_email)
@@ -983,6 +995,9 @@ async def mark_attendance(request: Request, authorization: str = Header(None)):
 
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization header missing")
+    
+    if authorization.startswith("Bearer "):
+        authorization = authorization.split("Bearer ")[1].strip()
 
     if not all([emp_no, month, attendance]):
         raise HTTPException(status_code=400, detail="Missing required fields")
