@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
 import Sidebar from "@/components/layouts/Sidebar";
 import { AuroraBackground } from "@/components/ui/aurora-background";
@@ -55,44 +55,153 @@ export default function Employees() {
   const [total, setTotal] = useState(0);
   const limit = 25;
 
-  const fetchEmployees = useCallback(async () => {
-    setLoading(true);
+  // Debug state
+  const [debugInfo, setDebugInfo] = useState(null);
+
+  const abortControllerRef = useRef(null);
+  const debounceTimerRef = useRef(null);
+
+  const fetchEmployees = useCallback(async (signal) => {
     const token = localStorage.getItem("token");
-    if (!token) return;
+    if (!token) {
+      console.error("❌ No token found");
+      toast.error("Please login first");
+      return;
+    }
+
+    setLoading(true);
 
     try {
       const query = new URLSearchParams({
-        limit,
-        skip: page * limit,
+        limit: limit.toString(),
+        skip: (page * limit).toString(),
         ...(type !== "all" ? { emp_type: type } : {}),
         ...(search ? { search } : {}),
       });
 
-      const res = await fetch(`${API_URL}/employees?${query}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const url = `${API_URL}/employees?${query}`;
+      console.log("🔍 Fetching from:", url);
+      console.log("📋 Query params:", {
+        limit,
+        skip: page * limit,
+        emp_type: type !== "all" ? type : "not set",
+        search: search || "not set",
       });
 
+      const res = await fetch(url, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        signal,
+      });
+
+      console.log("📊 Response status:", res.status);
+      console.log("📊 Response headers:", Object.fromEntries(res.headers.entries()));
+
       const data = await res.json();
+      console.log("📦 Response data:", data);
+
+      // Set debug info
+      setDebugInfo({
+        status: res.status,
+        url,
+        data,
+        timestamp: new Date().toISOString(),
+      });
+
       if (res.ok) {
-        setEmployees(data.employees || []);
-        setTotal(data.pagination?.total || 0);
-      } else toast.error(data.detail || "Failed to load employees");
+        // Check different possible response structures
+        let employeeList = [];
+        let totalCount = 0;
+
+        if (Array.isArray(data)) {
+          // Response is directly an array
+          employeeList = data;
+          totalCount = data.length;
+          console.log("✅ Data is array, length:", data.length);
+        } else if (data.employees && Array.isArray(data.employees)) {
+          // Response has employees property
+          employeeList = data.employees;
+          totalCount = data.pagination?.total || data.total || data.employees.length;
+          console.log("✅ Data has employees property, length:", employeeList.length);
+        } else if (data.data && Array.isArray(data.data)) {
+          // Response has data property
+          employeeList = data.data;
+          totalCount = data.total || data.data.length;
+          console.log("✅ Data has data property, length:", employeeList.length);
+        } else {
+          console.warn("⚠️ Unexpected response structure:", data);
+        }
+
+        console.log("✅ Setting employees:", employeeList.length);
+        console.log("✅ Setting total:", totalCount);
+
+        setEmployees(employeeList);
+        setTotal(totalCount);
+
+        if (employeeList.length === 0) {
+          toast.info("No employees found with current filters");
+        }
+      } else {
+        console.error("❌ Response not OK:", data);
+        toast.error(data.detail || data.message || "Failed to load employees");
+      }
     } catch (err) {
-      console.error("Error fetching employees:", err);
-      toast.error("Network error while fetching employees");
+      if (err.name !== 'AbortError') {
+        console.error("❌ Fetch error:", err);
+        console.error("Error details:", {
+          name: err.name,
+          message: err.message,
+          stack: err.stack,
+        });
+        toast.error(`Network error: ${err.message}`);
+        
+        setDebugInfo({
+          error: err.message,
+          errorType: err.name,
+          timestamp: new Date().toISOString(),
+        });
+      }
     } finally {
       setLoading(false);
     }
-  }, [search, type, page]);
+  }, [search, type, page, limit]);
 
   useEffect(() => {
     const saved = localStorage.getItem("user");
     if (saved) setUser(JSON.parse(saved));
+
+    // Log API_URL on mount
+    console.log("🌐 API_URL:", API_URL);
+    console.log("🔑 Token exists:", !!localStorage.getItem("token"));
   }, []);
 
   useEffect(() => {
-    const delay = setTimeout(fetchEmployees, 400);
-    return () => clearTimeout(delay);
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    abortControllerRef.current = new AbortController();
+
+    const delay = search ? 200 : 0;
+
+    debounceTimerRef.current = setTimeout(() => {
+      fetchEmployees(abortControllerRef.current.signal);
+    }, delay);
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
   }, [fetchEmployees]);
 
   const totalPages = Math.ceil(total / limit);
@@ -113,13 +222,23 @@ export default function Employees() {
       });
 
       const data = await res.json();
+      console.log("➕ Add employee response:", data);
+
       if (res.ok) {
         toast.success("Employee added successfully!");
         setAddOpen(false);
         setForm({ emp_no: "", name: "", designation: "", type: "regular" });
-        fetchEmployees();
-      } else toast.error(data.detail || "Failed to add employee");
-    } catch {
+        
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
+        abortControllerRef.current = new AbortController();
+        fetchEmployees(abortControllerRef.current.signal);
+      } else {
+        toast.error(data.detail || "Failed to add employee");
+      }
+    } catch (err) {
+      console.error("❌ Add employee error:", err);
       toast.error("Network error");
     } finally {
       setLoading(false);
@@ -135,29 +254,50 @@ export default function Employees() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      
+      console.log("📤 Uploading file:", file.name);
+      
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
       const data = await res.json();
+      
+      console.log("📤 Upload response:", data);
 
       if (res.ok) {
         toast.success("File uploaded successfully!");
         setUploadOpen(false);
         setFile(null);
-        fetchEmployees();
-      } else toast.error(data.detail || "Upload failed");
-    } catch {
+        
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
+        abortControllerRef.current = new AbortController();
+        fetchEmployees(abortControllerRef.current.signal);
+      } else {
+        toast.error(data.detail || "Upload failed");
+      }
+    } catch (err) {
+      console.error("❌ Upload error:", err);
       toast.error("Network error");
     } finally {
       setLoading(false);
     }
   };
 
+  const handleRefresh = () => {
+    console.log("🔄 Manual refresh triggered");
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+    fetchEmployees(abortControllerRef.current.signal);
+  };
+
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Sidebar */}
       <Sidebar
         user={user}
         setUser={setUser}
@@ -166,7 +306,6 @@ export default function Employees() {
         API_URL={API_URL}
       />
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col h-full">
         <AuroraBackground>
           <Toaster position="top-right" richColors closeButton />
@@ -177,7 +316,6 @@ export default function Employees() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
           >
-            {/* HEADER */}
             <div className="flex flex-col md:flex-row items-center justify-between gap-4">
               <motion.h2
                 className="text-3xl font-bold tracking-tight"
@@ -188,7 +326,6 @@ export default function Employees() {
               </motion.h2>
 
               <div className="flex gap-2">
-                {/* Upload Modal */}
                 <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
                   <DialogTrigger asChild>
                     <Button variant="outline" className="gap-1">
@@ -216,7 +353,6 @@ export default function Employees() {
                   </DialogContent>
                 </Dialog>
 
-                {/* Add Modal */}
                 <Dialog open={addOpen} onOpenChange={setAddOpen}>
                   <DialogTrigger asChild>
                     <Button className="gap-1">
@@ -274,7 +410,6 @@ export default function Employees() {
               </div>
             </div>
 
-            {/* TABLE SECTION */}
             <Card className="flex flex-col flex-1 border border-gray-200 shadow-sm bg-white/70 backdrop-blur">
               <CardHeader className="flex flex-col md:flex-row justify-between items-center gap-3">
                 <div className="flex flex-col sm:flex-row gap-3 w-full">
@@ -282,9 +417,18 @@ export default function Employees() {
                     placeholder="Search by name or designation..."
                     className="flex-1"
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => {
+                      setSearch(e.target.value);
+                      setPage(0);
+                    }}
                   />
-                  <Select value={type} onValueChange={setType}>
+                  <Select 
+                    value={type} 
+                    onValueChange={(v) => {
+                      setType(v);
+                      setPage(0);
+                    }}
+                  >
                     <SelectTrigger className="w-[160px]">
                       <SelectValue placeholder="Filter by Type" />
                     </SelectTrigger>
@@ -297,7 +441,7 @@ export default function Employees() {
                   <Button
                     variant="outline"
                     className="gap-2"
-                    onClick={fetchEmployees}
+                    onClick={handleRefresh}
                     disabled={loading}
                   >
                     <RefreshCcw className="w-4 h-4" /> Refresh
@@ -305,15 +449,39 @@ export default function Employees() {
                 </div>
               </CardHeader>
 
-              {/* Scrollable Table */}
               <CardContent className="flex-1 overflow-auto p-0">
                 {loading ? (
                   <div className="flex justify-center items-center h-full">
                     <Loader2 className="animate-spin w-8 h-8 text-gray-400" />
                   </div>
                 ) : employees.length === 0 ? (
-                  <div className="flex justify-center items-center h-full text-gray-500">
-                    No employees found.
+                  <div className="flex flex-col justify-center items-center h-full text-gray-500 gap-4 p-8">
+                    <p className="text-lg">No employees found.</p>
+                    
+                    {/* Debug info */}
+                    {debugInfo && (
+                      <details className="text-xs text-left bg-gray-100 p-4 rounded w-full max-w-2xl">
+                        <summary className="cursor-pointer font-semibold mb-2">
+                          🐛 Debug Info (Click to expand)
+                        </summary>
+                        <pre className="overflow-auto">
+                          {JSON.stringify(debugInfo, null, 2)}
+                        </pre>
+                        <div className="mt-2 space-y-1">
+                          <p><strong>API URL:</strong> {API_URL}</p>
+                          <p><strong>Token Present:</strong> {localStorage.getItem("token") ? "✅ Yes" : "❌ No"}</p>
+                          <p><strong>Current Filters:</strong></p>
+                          <ul className="ml-4">
+                            <li>Type: {type}</li>
+                            <li>Search: {search || "(empty)"}</li>
+                            <li>Page: {page}</li>
+                            <li>Limit: {limit}</li>
+                          </ul>
+                        </div>
+                      </details>
+                    )}
+                    
+                    <p className="text-sm">Check the browser console (F12) for detailed logs</p>
                   </div>
                 ) : (
                   <motion.div layout className="min-h-full overflow-x-auto">
@@ -330,7 +498,7 @@ export default function Employees() {
                       <TableBody>
                         {employees.map((emp, idx) => (
                           <motion.tr
-                            key={emp.emp_no || idx}
+                            key={emp.emp_no || emp._id || idx}
                             layout
                             whileHover={{
                               scale: 1.01,
@@ -352,9 +520,10 @@ export default function Employees() {
                               {emp.type}
                             </TableCell>
                             <TableCell>
-                              {new Date(emp.created_at).toLocaleDateString(
-                                "en-IN"
-                              )}
+                              {emp.created_at 
+                                ? new Date(emp.created_at).toLocaleDateString("en-IN")
+                                : "N/A"
+                              }
                             </TableCell>
                           </motion.tr>
                         ))}
@@ -364,10 +533,9 @@ export default function Employees() {
                 )}
               </CardContent>
 
-              {/* PAGINATION */}
               <div className="flex justify-between items-center p-4 border-t bg-gray-50">
                 <div className="text-sm text-gray-600">
-                  Showing {page * limit + 1}–
+                  Showing {employees.length > 0 ? page * limit + 1 : 0}–
                   {Math.min((page + 1) * limit, total)} of {total}
                 </div>
                 <div className="flex gap-2">
