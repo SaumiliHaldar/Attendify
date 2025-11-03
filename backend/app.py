@@ -418,8 +418,29 @@ async def get_employee_count():
 
 # Load employees (Excel upload)
 @app.post("/employees")
-async def upload_employees(file: UploadFile = File(...)):
+async def upload_employees(file: UploadFile = File(...), authorization: str = Header(None)):
+    """
+    Upload Excel file and safely insert/update employees.
+    Keeps existing data — no full deletion.
+    """
     import tempfile
+
+    # 🔐 Authentication (admin/superadmin only)
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Authorization header missing")
+
+    if authorization.startswith("Bearer "):
+        authorization = authorization.split("Bearer ")[1].strip()
+
+    session = await redis_get(authorization)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again")
+
+    # Parse session user
+    user_data = json.loads(session["result"]) if isinstance(session, dict) and "result" in session else json.loads(session)
+    user_role = user_data.get("role", "admin")
+    if user_role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Admin access required for upload")
 
     suffix = os.path.splitext(file.filename)[-1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -428,18 +449,20 @@ async def upload_employees(file: UploadFile = File(...)):
         temp_path = tmp.name
 
     all_employees = []
+    added, updated = 0, 0
+
     try:
         regular_sheets = [
             "ATTENDANCE_SSEE_SW_KGP_I",
             "ATTENDANCE_SSEE_SW_KGP_II",
-            "ATTENDANCE_SSEE_SW_KGP_III"
+            "ATTENDANCE_SSEE_SW_KGP_III",
         ]
         apprentice_sheet = "APPRENTICE ATTENDANCE"
 
-        # Regular Employees
-        for sheet in regular_sheets:
+        # Helper function to read a sheet safely
+        def read_sheet(sheet_name: str, skiprows: int, emp_type: str):
             try:
-                df = pd.read_excel(temp_path, sheet_name=sheet, skiprows=6)
+                df = pd.read_excel(temp_path, sheet_name=sheet_name, skiprows=skiprows)
                 df.rename(columns={
                     "S. NO.": "S_No",
                     "NAME": "Name",
@@ -447,58 +470,74 @@ async def upload_employees(file: UploadFile = File(...)):
                     "EMPLOYEE NO.": "Employee_No"
                 }, inplace=True)
                 df = df.dropna(subset=["Employee_No"])
-
                 for _, row in df.iterrows():
                     all_employees.append({
                         "emp_no": clean_emp_no(row["Employee_No"]),
                         "name": str(row["Name"]).strip(),
                         "designation": str(row["Designation"]).strip(),
-                        "type": "regular",
-                        "created_at": datetime.now(kolkata_tz).isoformat()
+                        "type": emp_type,
+                        "created_at": datetime.now(kolkata_tz).isoformat(),
                     })
             except Exception as e:
-                print(f"Error reading regular sheet {sheet}: {e}")
-                continue
+                print(f"Error reading sheet {sheet_name}: {e}")
 
-        # Apprentice Employees
-        try:
-            df = pd.read_excel(temp_path, sheet_name=apprentice_sheet, skiprows=8)
-            df.rename(columns={
-                "S. NO.": "S_No",
-                "NAME": "Name",
-                "DESIGNATION": "Designation",
-                "EMPLOYEE NO.": "Employee_No"
-            }, inplace=True)
-            df = df.dropna(subset=["Employee_No"])
+        # Read all sheets
+        for sheet in regular_sheets:
+            read_sheet(sheet, skiprows=6, emp_type="regular")
 
-            for _, row in df.iterrows():
-                all_employees.append({
-                    "emp_no": clean_emp_no(row["Employee_No"]),
-                    "name": str(row["Name"]).strip(),
-                    "designation": str(row["Designation"]).strip(),
-                    "type": "apprentice",
-                    "created_at": datetime.now(kolkata_tz).isoformat()
-                })
-        except Exception as e:
-            print(f"Error reading apprentice sheet: {e}")
+        read_sheet(apprentice_sheet, skiprows=8, emp_type="apprentice")
 
         if not all_employees:
-            raise HTTPException(status_code=400, detail="No employee data found.")
-
-        # Print some employee numbers for debugging
-        print(f"Sample employee numbers: {[emp['emp_no'] for emp in all_employees[:5]]}")
+            raise HTTPException(status_code=400, detail="No employee data found in file")
 
         emp_collection = db["employees"]
-        await emp_collection.delete_many({})
-        await emp_collection.insert_many(all_employees)
 
-        return {"message": f"{len(all_employees)} employees uploaded successfully."}
+        # Upsert logic — add new or update existing
+        for emp in all_employees:
+            cleaned_no = emp["emp_no"]
+            existing = await emp_collection.find_one({"emp_no": cleaned_no})
+
+            if existing:
+                # Update existing employee if details differ
+                updates = {}
+                if existing.get("name") != emp["name"].title():
+                    updates["name"] = emp["name"].title()
+                if existing.get("designation") != emp["designation"].title():
+                    updates["designation"] = emp["designation"].title()
+                if existing.get("type") != emp["type"]:
+                    updates["type"] = emp["type"]
+
+                if updates:
+                    updates["updated_at"] = datetime.now(kolkata_tz).isoformat()
+                    updates["updated_by"] = user_data.get("email")
+                    await emp_collection.update_one({"emp_no": cleaned_no}, {"$set": updates})
+                    updated += 1
+            else:
+                emp["name"] = emp["name"].title()
+                emp["designation"] = emp["designation"].title()
+                emp["created_by"] = user_data.get("email")
+                await emp_collection.insert_one(emp)
+                added += 1
+
+        return {
+            "message": "Employee data processed successfully",
+            "summary": {
+                "added": added,
+                "updated": updated,
+                "total_processed": len(all_employees),
+            },
+            "status": "success"
+        }
 
     except Exception as e:
+        print(f"Error processing employees: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing employees: {e}")
 
     finally:
-        os.remove(temp_path)
+        try:
+            os.remove(temp_path)
+        except Exception as e:
+            print(f"Temp file cleanup failed: {e}")
 
 
 # Manual employee addition
