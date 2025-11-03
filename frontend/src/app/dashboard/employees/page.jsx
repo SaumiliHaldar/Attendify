@@ -14,7 +14,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Users, Upload, Plus, Loader2 } from "lucide-react";
-import { toast, Toaster } from "sonner"; // ✅ import toast + Toaster
+import { toast, Toaster } from "sonner";
 import { API_URL } from "@/lib/api";
 
 export default function Employees() {
@@ -31,22 +31,33 @@ export default function Employees() {
 
   const handleAddEmployee = async () => {
     setLoading(true);
+    const token = localStorage.getItem("token");
+    if (!token) {
+      toast.error("Unauthorized. Please log in again.");
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch(`${API_URL}/employees/manual`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(form),
       });
       const data = await res.json();
+
       if (res.ok) {
-        toast.success("✅ Employee added successfully!");
+        toast.success("Employee added successfully!");
         setAddOpen(false);
         setForm({ emp_no: "", name: "", designation: "", type: "regular" });
       } else {
-        toast.error(data.detail || "❌ Failed to add employee");
+        toast.error(data.detail || "Failed to add employee");
       }
     } catch (e) {
-      toast.error("⚠️ Network error");
+      toast.error("Network error");
     } finally {
       setLoading(false);
     }
@@ -54,17 +65,31 @@ export default function Employees() {
 
   const handleUpload = async () => {
     if (!file) return toast.error("Please select a file");
+
     setLoading(true);
+    const token = localStorage.getItem("token");
+    if (!token) {
+      toast.error("Unauthorized. Please log in again.");
+      setLoading(false);
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append("file", file);
+
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
         body: formData,
       });
+
       const data = await res.json();
+
       if (res.ok) {
-        toast.success(" File uploaded successfully!");
+        toast.success("File uploaded successfully!");
         setUploadOpen(false);
         setFile(null);
       } else {
@@ -76,6 +101,7 @@ export default function Employees() {
       setLoading(false);
     }
   };
+
 
   return (
     <AuroraBackground>
