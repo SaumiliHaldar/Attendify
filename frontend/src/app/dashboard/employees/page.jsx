@@ -64,40 +64,28 @@ export default function EmployeesPage() {
 
   // ✅ Optimized + cancellable fetch
   const fetchEmployees = useCallback(async (signal) => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      toast.error("Please login first");
-      return;
-    }
-
     setLoading(true);
     try {
       const query = new URLSearchParams({
-        limit,
-        skip: page * limit,
+        limit: limit.toString(),
+        skip: (page * limit).toString(),
         ...(type !== "all" ? { emp_type: type } : {}),
         ...(search ? { search } : {}),
       });
 
-      const res = await fetch(`${API_URL}/employees?${query}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal,
-      });
+      const res = await fetch(`${API_URL}/employees?${query}`, { signal });
+      if (!res.ok) throw new Error("Failed to fetch employees");
 
-      if (!res.ok) throw new Error("Failed to fetch");
       const data = await res.json();
-
       setEmployees(data.employees || []);
       setTotal(data.pagination?.total || 0);
     } catch (err) {
-      if (err.name !== "AbortError") {
-        console.error("Error fetching employees:", err);
-        toast.error("Failed to load employees");
-      }
+      if (err.name !== "AbortError") toast.error("Failed to load employees");
     } finally {
       setLoading(false);
     }
   }, [page, type, search]);
+
 
   // ✅ Abortable effect for responsiveness
   useEffect(() => {
