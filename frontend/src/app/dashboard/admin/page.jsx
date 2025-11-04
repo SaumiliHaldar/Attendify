@@ -40,7 +40,7 @@ export default function AdminDashboard() {
               Verify or update attendance records.
             </p>
             <a
-              href="/dashboard/admin/attendance"
+              href="/dashboard/attendance"
               className="text-blue-600 hover:underline text-sm"
             >
               View Attendance →
