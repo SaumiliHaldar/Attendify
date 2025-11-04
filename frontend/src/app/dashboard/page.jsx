@@ -96,7 +96,15 @@ export default function Dashboard({ children }) {
   const notifRef = useRef(null);
   const profileRef = useRef(null);
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://attendify-tv8w.onrender.com";
+
+  const [overview, setOverview] = useState({
+    employees: 0,
+    attendanceToday: 0,
+    pendingNotifications: 0,
+    pendingAttendance: 0,
+    weeklyAvgPresent: 0,
+  });
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -131,7 +139,14 @@ export default function Dashboard({ children }) {
 
   useEffect(() => {
     if (!notifOpen || !user?.role) return;
-    fetch(`${API_URL}/notifications`)
+    
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    
+    fetch(`${API_URL}/notifications`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
       .then((res) => res.json())
       .then((data) => setNotifications(data))
       .catch((err) => console.error("Error fetching notifications:", err));
@@ -153,8 +168,16 @@ export default function Dashboard({ children }) {
   // Fetch employee count
   useEffect(() => {
     const fetchEmployeeCount = async () => {
+      if (!user) return;
+      
+      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      
       try {
-        const res = await fetch(`${API_URL}/employees/count`);
+        const res = await fetch(`${API_URL}/employees/count`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
         const data = await res.json();
         setOverview((prev) => ({ ...prev, employees: data.count }));
       } catch (err) {
@@ -163,17 +186,18 @@ export default function Dashboard({ children }) {
     };
 
     fetchEmployeeCount();
-    const interval = setInterval(fetchEmployeeCount, 5000);
+    const interval = setInterval(fetchEmployeeCount, 30000);
     return () => clearInterval(interval);
-  }, [API_URL]);
+  }, [API_URL, user]);
 
-  // Fetch holidays
+  // Fetch ALL holidays from /holidays endpoint
   useEffect(() => {
-    const fetchHolidays = async () => {
+    const fetchAllHolidays = async () => {
       try {
         const res = await fetch(`${API_URL}/holidays`);
         const data = await res.json();
-        if (Array.isArray(data.holidays)) {
+        
+        if (data.holidays && Array.isArray(data.holidays)) {
           setHolidays(data.holidays);
         }
       } catch (err) {
@@ -181,12 +205,46 @@ export default function Dashboard({ children }) {
       }
     };
 
-    fetchHolidays();
+    fetchAllHolidays();
+    // Refresh holidays every hour (they don't change often)
+    const interval = setInterval(fetchAllHolidays, 3600000);
+    return () => clearInterval(interval);
+  }, [API_URL]);
+
+  // Fetch dashboard data from home endpoint for weekly average
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      try {
+        const res = await fetch(`${API_URL}/`);
+        const data = await res.json();
+        
+        // Update overview with weekly average
+        if (data.attendance_snapshot?.weekly_avg) {
+          setOverview((prev) => ({
+            ...prev,
+            weeklyAvgPresent: Math.round(data.attendance_snapshot.weekly_avg.avg_present),
+          }));
+        }
+      } catch (err) {
+        console.error("Error fetching dashboard data:", err);
+      }
+    };
+
+    fetchDashboardData();
+    const interval = setInterval(fetchDashboardData, 60000);
+    return () => clearInterval(interval);
   }, [API_URL]);
 
   const markAsRead = async (id) => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    
     try {
-      await fetch(`${API_URL}/notifications/read/${id}`, { method: "POST" });
+      await fetch(`${API_URL}/notifications/read/${id}`, { 
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       setNotifications((prev) =>
         prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
       );
@@ -196,16 +254,40 @@ export default function Dashboard({ children }) {
   };
 
   const markAllAsRead = async () => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    
     try {
-      await fetch(`${API_URL}/notifications/read-all`, { method: "POST" });
+      await fetch(`${API_URL}/notifications/read-all`, { 
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleLogout = () => {
-    if (typeof window !== "undefined") localStorage.removeItem("user");
+  const handleLogout = async () => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    
+    try {
+      await fetch(`${API_URL}/logout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token }),
+      });
+    } catch (e) {
+      console.error("Logout error:", e);
+    }
+    
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("user");
+      localStorage.removeItem("token");
+    }
     setUser(null);
     setDropdownOpen(false);
     window.location.href = "/";
@@ -217,14 +299,6 @@ export default function Dashboard({ children }) {
       : user?.role === "admin"
         ? "Admin Dashboard"
         : "Dashboard";
-
-  const [overview, setOverview] = useState({
-    employees: 0,
-    attendanceToday: 0,
-    pendingNotifications: 0,
-    pendingAttendance: 0,
-    weeklyAvgPresent: 0,
-  });
 
   return (
     <div className="flex h-screen w-full" ref={sidebarRef}>
@@ -295,18 +369,18 @@ export default function Dashboard({ children }) {
               </CardContent>
             </Card>
 
-            {/* 4. Upcoming Holidays (static, full-row width) */}
+            {/* 4. Upcoming Holidays (ALL HOLIDAYS) */}
             {!user && (
               <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <Card className="w-full max-w-3xl mx-auto">
                   <CardHeader className="flex items-center gap-2">
                     <CalendarDays className="w-6 h-6 text-red-500" />
-                    <CardTitle>Holidays List</CardTitle>
+                    <CardTitle>All Holidays ({holidays.length})</CardTitle>
                   </CardHeader>
                   <CardContent className="max-h-72 overflow-y-auto">
                     {holidays.length === 0 ? (
                       <p className="text-sm text-gray-500">
-                        No upcoming holidays
+                        No holidays found in database
                       </p>
                     ) : (
                       <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
@@ -316,7 +390,7 @@ export default function Dashboard({ children }) {
                             className="py-3 flex items-center justify-between gap-3"
                           >
                             <span className="font-medium truncate">{h.name}</span>
-                            <span className="text-sm text-gray-500">
+                            <span className="text-sm text-gray-500 whitespace-nowrap">
                               {h.date}
                             </span>
                           </li>

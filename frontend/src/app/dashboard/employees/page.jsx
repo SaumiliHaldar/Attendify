@@ -36,7 +36,6 @@ import {
 } from "@/components/ui/table";
 import { Users, Upload, Plus, Loader2 } from "lucide-react";
 import { toast, Toaster } from "sonner";
-import { API_URL } from "@/lib/api";
 
 export default function Employees() {
   const [addOpen, setAddOpen] = useState(false);
@@ -59,31 +58,43 @@ export default function Employees() {
   const [limit] = useState(10);
   const [total, setTotal] = useState(0);
 
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
   const totalPages = Math.ceil(total / limit);
 
   useEffect(() => {
-    const saved = localStorage.getItem("user");
-    if (saved) setUser(JSON.parse(saved));
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("user");
+      if (saved) setUser(JSON.parse(saved));
+    }
   }, []);
 
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
-  // Fetch Employees (auto-refresh)
+  // Fetch Employees
   const fetchEmployees = async () => {
     if (!token) return;
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        search: search || "",
-        emp_type: empType === "all" ? "" : empType,
         skip: (page * limit).toString(),
         limit: limit.toString(),
       });
 
+      if (search.trim()) {
+        params.append("search", search.trim());
+      }
+
+      if (empType !== "all") {
+        params.append("emp_type", empType);
+      }
+
       const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
-        headers: { Authorization: token },
+        headers: { 
+          Authorization: `Bearer ${token}`,
+        },
       });
+      
       const data = await res.json();
 
       if (res.ok) {
@@ -93,27 +104,24 @@ export default function Employees() {
         toast.error(data.detail || "Failed to fetch employees");
       }
     } catch (err) {
-      console.error(err);
+      console.error("Fetch employees error:", err);
       toast.error("Network error");
     } finally {
       setLoading(false);
     }
   };
 
-  // Initial fetch & refetch when filters/pagination change
   useEffect(() => {
-    if (token) fetchEmployees();
-  }, [page, empType]);
-
-  // Refetch when token becomes available
-  useEffect(() => {
-    if (token) fetchEmployees();
-  }, [token]);
+    if (token) {
+      fetchEmployees();
+    }
+  }, [page, empType, token]);
 
   // Add Employee
   const handleAddEmployee = async () => {
-    if (!form.emp_no || !form.name || !form.designation)
+    if (!form.emp_no || !form.name || !form.designation) {
       return toast.error("Please fill all fields");
+    }
 
     setLoading(true);
     try {
@@ -121,31 +129,30 @@ export default function Employees() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: token,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(form),
       });
 
       const data = await res.json();
+      
       if (res.ok) {
         toast.success(data.message || "Employee added successfully!");
         setAddOpen(false);
         setForm({ emp_no: "", name: "", designation: "", type: "regular" });
-
-        // Instantly add new employee in UI
-        setEmployees((prev) => [data.employee || form, ...prev]);
-        setTotal((prev) => prev + 1);
+        await fetchEmployees();
       } else {
         toast.error(data.detail || "Failed to add employee");
       }
-    } catch {
+    } catch (err) {
+      console.error("Add employee error:", err);
       toast.error("Network error");
     } finally {
       setLoading(false);
     }
   };
 
-  // Upload Excel (auto refresh)
+  // Upload Excel
   const handleUpload = async () => {
     if (!file) return toast.error("Please select a file");
 
@@ -156,26 +163,27 @@ export default function Employees() {
 
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
-        headers: { Authorization: token },
+        headers: { 
+          Authorization: `Bearer ${token}`,
+        },
         body: formData,
       });
 
       const data = await res.json();
 
       if (res.ok) {
+        const summary = data.summary || {};
         toast.success(
-          data.message ||
-            `Uploaded successfully (Added: ${data.summary?.added || 0}, Updated: ${
-              data.summary?.updated || 0
-            })`
+          `Upload successful! Added: ${summary.added || 0}, Updated: ${summary.updated || 0}`
         );
         setUploadOpen(false);
         setFile(null);
-        fetchEmployees(); // 🔁 Refresh table
+        await fetchEmployees();
       } else {
         toast.error(data.detail || "Upload failed");
       }
-    } catch {
+    } catch (err) {
+      console.error("Upload error:", err);
       toast.error("Network error");
     } finally {
       setLoading(false);
@@ -316,10 +324,19 @@ export default function Employees() {
                     className="flex-1 min-w-[200px]"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        setPage(0);
+                        fetchEmployees();
+                      }
+                    }}
                   />
-                  <Select value={empType} onValueChange={setEmpType}>
+                  <Select value={empType} onValueChange={(val) => {
+                    setEmpType(val);
+                    setPage(0);
+                  }}>
                     <SelectTrigger className="w-full sm:w-[180px]">
-                      <SelectValue placeholder="Filter by type" />
+                      <SelectValue placeholder="All" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
@@ -327,7 +344,13 @@ export default function Employees() {
                       <SelectItem value="apprentice">Apprentice</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button onClick={fetchEmployees} variant="outline">
+                  <Button 
+                    onClick={() => {
+                      setPage(0);
+                      fetchEmployees();
+                    }} 
+                    variant="outline"
+                  >
                     Search
                   </Button>
                 </div>
