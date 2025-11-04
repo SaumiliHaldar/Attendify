@@ -44,10 +44,18 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 
+# ==============================
+# Redis Token Verification
+# ==============================
+REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
 # Security Config
 SUPERADMIN_EMAILS = [email.strip() for email in os.getenv("SUPERADMIN_EMAILS", "").split(",") if email.strip()]
 ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",") if origin.strip()]
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+SESSION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 
 # Timezone setup for Kolkata
 kolkata_tz = pytz.timezone("Asia/Kolkata")
@@ -79,32 +87,75 @@ EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 # ==============================
 
 async def verify_session(authorization: str) -> dict:
-    """Centralized session verification - SECURE"""
+    """
+    Centralized session verification used by endpoints.
+    - accepts "Authorization" header value (e.g. "Bearer <token>")
+    - checks local sessions.redis_get(token) first (sessions.py)
+    - falls back to Upstash REST if redis_get returned None
+    - handles session returned as dict or JSON string
+    """
     if not authorization:
         raise HTTPException(status_code=403, detail="Authorization required")
-    
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=403, detail="Invalid authorization format")
-    
     token = authorization[7:].strip()
     if not token:
         raise HTTPException(status_code=403, detail="Empty token")
-    
-    session = await redis_get(token)
+
+    # 1) Try local redis_get (sessions.py) — this returns either None, str or dict
+    try:
+        session = await redis_get(token)
+    except Exception as e:
+        logger.warning(f"redis_get raised: {e}")
+        session = None
+
+    # 2) If not found, optionally fallback to Upstash REST (if configured)
+    if not session and REDIS_REST_URL and REDIS_REST_TOKEN:
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {"Authorization": f"Bearer {REDIS_REST_TOKEN}"}
+                payload = {"GET": token}
+                resp = await client.post(REDIS_REST_URL, json=payload, timeout=10)
+                if resp.status_code == 200:
+                    session = resp.json()
+                else:
+                    logger.debug(f"Upstash responded {resp.status_code}: {resp.text}")
+                    session = None
+        except Exception as e:
+            logger.error(f"Upstash REST call failed: {e}")
+            session = None
+
     if not session:
         raise HTTPException(status_code=403, detail="Session expired")
-    
-    try:
-        if isinstance(session, dict) and 'result' in session:
-            return json.loads(session['result'])
-        elif isinstance(session, str):
-            return json.loads(session)
-        else:
-            raise ValueError("Invalid session format")
-    except Exception as e:
-        logger.error(f"Session parse error: {e}")
-        raise HTTPException(status_code=403, detail="Invalid session")
 
+    # session may be:
+    # - a dict from redis_get already (maybe { "email":..., "role":... } )
+    # - a string JSONified user JSON
+    # - Upstash REST format: {"result": "<json-string>"} OR {"result": None}
+    try:
+        # Upstash REST returns dict with 'result' key when called
+        if isinstance(session, dict) and 'result' in session:
+            if not session['result']:
+                raise HTTPException(status_code=403, detail="Session expired")
+            # session['result'] is a JSON string
+            user = json.loads(session['result'])
+            return user
+
+        # if session is dict (already a decoded user)
+        if isinstance(session, dict):
+            return session
+
+        # if session is a JSON string
+        if isinstance(session, str):
+            return json.loads(session)
+
+        raise ValueError("Invalid session format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session parse error: {e} (type={type(session)})")
+        raise HTTPException(status_code=403, detail="Invalid session")
+    
 def escape_regex(text: str) -> str:
     """Escape regex special characters"""
     return re.escape(text)
@@ -119,6 +170,12 @@ def clean_emp_no(emp_no):
     if emp_str.endswith('.0'):
         emp_str = emp_str[:-2]
     return emp_str
+
+async def get_current_user(authorization: str):
+    """
+    Backwards-compatible wrapper. Expects full "Authorization" header value.
+    """
+    return await verify_session(authorization)
 
 # ==============================
 # Pydantic Models for Validation
@@ -436,35 +493,37 @@ async def google_callback(request: Request):
 
     # Save user in MongoDB
     try:
-        existing_user = await collection.find_one({"email": user_info["email"]})
-        if not existing_user:
-            await collection.insert_one(user_data)
+        await collection.update_one(
+            {"email": user_data["email"]},
+            {"$set": user_data},
+            upsert=True
+        )
     except Exception as e:
         logger.error(f"MongoDB error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
 
-    # SECURE: Generate random session token
+    # Generate secure session token
     session_token = secrets.token_urlsafe(32)
     
     session_data = {
         "email": user_info["email"],
         "name": user_info.get("name", ""),
         "is_verified": user_info.get("verified_email", False),
-        "role": role
+        "role": role,
+        "session_token": session_token
     }
 
     try:
         session_json = json.dumps(session_data)
         logger.info(f"Session created for user: {user_info['email']}")
         
-        # Store with secure token as key, not email
-        await redis_set(session_token, session_json, expiry=604800)
+        # Store with secure token as key
+        await redis_set(session_token, session_json, expiry=SESSION_TTL_SECONDS)
         
     except Exception as e:
         logger.error(f"Redis error: {e}")
 
     params = {
-        "token": session_token,  # Send token, not email
+        "token": session_token,
         "email": user_info["email"],
         "name": user_info.get("name", ""),
         "picture": user_info.get("picture", ""),
@@ -476,7 +535,6 @@ async def google_callback(request: Request):
     
     redirect_url = f"{FRONTEND_URL}/?{urlencode(params)}"
     return RedirectResponse(url=redirect_url)
-
 # Logout and session cleared
 @app.post("/logout")
 async def logout(request: Request):
@@ -807,50 +865,82 @@ async def delete_employee(
 # Load holidays
 @app.post("/holidays")
 async def upload_holidays(file: UploadFile = File(...), authorization: str = Header(None)):
-    import tempfile
-    
-    await verify_session(authorization)
-
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    suffix = os.path.splitext(file.filename)[-1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(contents)
-        temp_path = tmp.name
-
-    holidays = []
+    """
+    Upload holidays Excel file.
+    Accepts any sheet containing 'holiday' in its name (case-insensitive).
+    Requires admin or superadmin role.
+    Stores holidays with 'date' as YYYY-MM-DD strings and 'name'.
+    """
     try:
-        df = pd.read_excel(temp_path, sheet_name="HOLIDAYS", header=1)
-        df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
+        user = await verify_session(authorization)
+        role = user.get("role", "")
+        if role not in ("admin", "superadmin"):
+            raise HTTPException(status_code=403, detail="Not authorized")
 
-        for _, row in df_filtered.iterrows():
-            raw_date = str(row["Date"]).strip()
-            name = sanitize_input(str(row["Name of the Occasion"]))
-            date = pd.to_datetime(raw_date, dayfirst=True, errors="coerce")
-            if pd.notna(date):
-                holidays.append({
-                    "date": date.strftime("%Y-%m-%d"),
-                    "name": name
-                })
+        # Save file to temp
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[-1]) as tmp:
+            tmp.write(await file.read())
+            temp_path = tmp.name
+
+        # Read excel, find any sheet with 'holiday' in name
+        xls = pd.ExcelFile(temp_path)
+        sheet_name = None
+        for s in xls.sheet_names:
+            if "holiday" in s.lower():
+                sheet_name = s
+                break
+        if not sheet_name:
+            # fallback: if someone named it "HOLIDAYS " etc earlier logic handled header=1
+            raise HTTPException(status_code=400, detail="No sheet containing 'holiday' found")
+
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Holiday sheet is empty")
+
+        # Normalize column names (make lower-case)
+        df.columns = [str(c).strip().lower() for c in df.columns]
+
+        # Accept flexible names - try to detect date and name columns
+        possible_date_cols = [c for c in df.columns if "date" in c]
+        possible_name_cols = [c for c in df.columns if ("name" in c) or ("occasion" in c) or ("occasion name" in c)]
+
+        if not possible_date_cols or not possible_name_cols:
+            raise HTTPException(status_code=400, detail="Expected columns containing 'date' and 'name'")
+
+        date_col = possible_date_cols[0]
+        name_col = possible_name_cols[0]
+
+        df = df[[date_col, name_col]].dropna(subset=[date_col, name_col])
+        # Convert dates to ISO yyyy-mm-dd strings
+        df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
+        df = df[df[date_col].notna()]
+
+        holidays = []
+        for _, r in df.iterrows():
+            dt = r[date_col].date()
+            name = sanitize_input(str(r[name_col]))
+            holidays.append({"date": dt.strftime("%Y-%m-%d"), "name": name})
 
         if not holidays:
             raise HTTPException(status_code=400, detail="No valid holidays found")
 
         hol_collection = db["holidays"]
-        await hol_collection.delete_many({})
+        await hol_collection.delete_many({})  # clear existing
         await hol_collection.insert_many(holidays)
 
-        return {"message": f"{len(holidays)} holidays uploaded successfully"}
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
 
+        return {"message": f"{len(holidays)} holidays uploaded successfully", "uploaded_by": user.get("email"), "sheet": sheet_name}
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error parsing holidays: {e}")
-        raise HTTPException(status_code=500, detail="Error parsing holidays")
-
-    finally:
-        os.remove(temp_path)
-
+        logger.exception(f"Error parsing holidays: {e}")
+        raise HTTPException(status_code=500, detail=f"Error parsing holidays: {e}")
 # Fetch holidays
 @app.get("/holidays")
 async def get_holidays():
