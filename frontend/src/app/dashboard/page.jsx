@@ -375,7 +375,7 @@ export default function Dashboard({ children }) {
                 <Card className="w-full max-w-3xl mx-auto">
                   <CardHeader className="flex items-center gap-2">
                     <CalendarDays className="w-6 h-6 text-red-500" />
-                    <CardTitle>All Holidays ({holidays.length})</CardTitle>
+                    <CardTitle>Holidays List</CardTitle>
                   </CardHeader>
                   <CardContent className="max-h-72 overflow-y-auto">
                     {holidays.length === 0 ? (

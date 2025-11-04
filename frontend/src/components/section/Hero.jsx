@@ -139,7 +139,7 @@ export default function Hero() {
             <Card className="flex-1">
               <CardHeader className="flex items-center gap-2">
                 <CalendarCheck className="w-6 h-6 text-purple-500" />
-                <CardTitle>Weekly Average (Last 7 Days)</CardTitle>
+                <CardTitle>Weekly Average</CardTitle>
               </CardHeader>
               <CardContent>
                 {data ? (
