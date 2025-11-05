@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, APIRouter, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -7,11 +7,10 @@ import json
 import httpx
 import pytz
 from datetime import datetime, timedelta
-from typing import Dict
+from typing import Dict, Optional
 import calendar
 from io import BytesIO
 from excelmaker import create_attendance_excel
-from sessions import redis_set, redis_get, redis_delete
 import pandas as pd
 from fastapi import UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +21,7 @@ import html
 import logging
 from pydantic import BaseModel, Field, validator
 from collections import defaultdict
+import tempfile
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -44,18 +44,11 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 
-# ==============================
-# Redis Token Verification
-# ==============================
-REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
-REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
-
 # Security Config
 SUPERADMIN_EMAILS = [email.strip() for email in os.getenv("SUPERADMIN_EMAILS", "").split(",") if email.strip()]
 ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",") if origin.strip()]
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
-
 
 # Timezone setup for Kolkata
 kolkata_tz = pytz.timezone("Asia/Kolkata")
@@ -79,83 +72,75 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
-# Employee sheet
-EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
+# ==============================
+# CENTRALIZED SESSION MANAGEMENT (IN-MEMORY)
+# ==============================
+
+# Global in-memory dictionary for active sessions
+# Key: session_token (str)
+# Value: {"user_data": user_data_dict, "expires_at": datetime object}
+active_sessions: Dict[str, Dict] = {}
+
+
+async def verify_session_token(authorization: Optional[str] = Header(None)) -> dict:
+    """
+    CENTRALIZED session verification - uses in-memory store.
+    - Validates token from Authorization header (Bearer <token>)
+    - Checks in-memory store for session and expiration
+    - Refreshes session TTL on valid access
+    - Returns user data dict
+    
+    Raises HTTPException(403) if invalid/expired
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=403, detail="Bearer token required in Authorization header")
+    
+    token = authorization[7:].strip()
+    
+    if not token:
+        raise HTTPException(status_code=403, detail="Empty authorization token")
+    
+    # Check in-memory store
+    session_entry = active_sessions.get(token)
+    
+    if not session_entry:
+        raise HTTPException(status_code=403, detail="Session expired or invalid. Please login again.")
+    
+    # Check expiration
+    if datetime.now() > session_entry["expires_at"]:
+        # Delete expired session
+        del active_sessions[token]
+        logger.info(f"Session expired and deleted for token: {token[:10]}...")
+        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
+    
+    # Session is valid: get user data
+    user_data = session_entry["user_data"]
+    
+    # REFRESH SESSION TTL - extends session by 7 days on each valid access
+    new_expiry = datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS)
+    session_entry["expires_at"] = new_expiry
+    logger.info(f"Session refreshed for user: {user_data['email']}")
+    
+    return user_data
+
+
+async def require_admin(user_data: dict = Depends(verify_session_token)) -> dict:
+    """Dependency to require admin or superadmin role"""
+    if user_data.get("role") not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user_data
+
+
+async def require_superadmin(user_data: dict = Depends(verify_session_token)) -> dict:
+    """Dependency to require superadmin role"""
+    if user_data.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Superadmin access required")
+    return user_data
 
 # ==============================
 # Security Helper Functions
 # ==============================
 
-async def verify_session(authorization: str) -> dict:
-    """
-    Centralized session verification used by endpoints.
-    - accepts "Authorization" header value (e.g. "Bearer <token>")
-    - checks local sessions.redis_get(token) first (sessions.py)
-    - falls back to Upstash REST if redis_get returned None
-    - handles session returned as dict or JSON string
-    """
-    if not authorization:
-        raise HTTPException(status_code=403, detail="Authorization required")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=403, detail="Invalid authorization format")
-    token = authorization[7:].strip()
-    if not token:
-        raise HTTPException(status_code=403, detail="Empty token")
-
-    # 1) Try local redis_get (sessions.py) — this returns either None, str or dict
-    try:
-        session = await redis_get(token)
-    except Exception as e:
-        logger.warning(f"redis_get raised: {e}")
-        session = None
-
-    # 2) If not found, optionally fallback to Upstash REST (if configured)
-    if not session and REDIS_REST_URL and REDIS_REST_TOKEN:
-        try:
-            async with httpx.AsyncClient() as client:
-                headers = {"Authorization": f"Bearer {REDIS_REST_TOKEN}"}
-                payload = {"GET": token}
-                resp = await client.post(REDIS_REST_URL, json=payload, timeout=10)
-                if resp.status_code == 200:
-                    session = resp.json()
-                else:
-                    logger.debug(f"Upstash responded {resp.status_code}: {resp.text}")
-                    session = None
-        except Exception as e:
-            logger.error(f"Upstash REST call failed: {e}")
-            session = None
-
-    if not session:
-        raise HTTPException(status_code=403, detail="Session expired")
-
-    # session may be:
-    # - a dict from redis_get already (maybe { "email":..., "role":... } )
-    # - a string JSONified user JSON
-    # - Upstash REST format: {"result": "<json-string>"} OR {"result": None}
-    try:
-        # Upstash REST returns dict with 'result' key when called
-        if isinstance(session, dict) and 'result' in session:
-            if not session['result']:
-                raise HTTPException(status_code=403, detail="Session expired")
-            # session['result'] is a JSON string
-            user = json.loads(session['result'])
-            return user
-
-        # if session is dict (already a decoded user)
-        if isinstance(session, dict):
-            return session
-
-        # if session is a JSON string
-        if isinstance(session, str):
-            return json.loads(session)
-
-        raise ValueError("Invalid session format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session parse error: {e} (type={type(session)})")
-        raise HTTPException(status_code=403, detail="Invalid session")
-    
 def escape_regex(text: str) -> str:
     """Escape regex special characters"""
     return re.escape(text)
@@ -170,12 +155,6 @@ def clean_emp_no(emp_no):
     if emp_str.endswith('.0'):
         emp_str = emp_str[:-2]
     return emp_str
-
-async def get_current_user(authorization: str):
-    """
-    Backwards-compatible wrapper. Expects full "Authorization" header value.
-    """
-    return await verify_session(authorization)
 
 # ==============================
 # Pydantic Models for Validation
@@ -260,27 +239,28 @@ async def auto_notify(request: Request, actor: str, action: str):
     await notify_superadmins(notification)
 
 @app.get("/notifications")
-async def get_notifications(status: str = None, authorization: str = Header(None)):
+async def get_notifications(
+    status: str = None,
+    user_data: dict = Depends(verify_session_token)
+):
     """Fetch notifications. Filter by status if provided."""
-    await verify_session(authorization)
-    
     query = {}
     if status:
         query["status"] = status
 
     notifications = await db["notifications"].find(query).sort("expireAt", -1).to_list(100)
     
-    # Convert ObjectId → string for all results
     for n in notifications:
         n["_id"] = str(n["_id"])
 
     return notifications
 
 @app.post("/notifications/read/{notification_id}")
-async def mark_notification_read(notification_id: str, authorization: str = Header(None)):
+async def mark_notification_read(
+    notification_id: str,
+    user_data: dict = Depends(verify_session_token)
+):
     """Mark a notification as read by ID."""
-    await verify_session(authorization)
-    
     from bson import ObjectId
     result = await db["notifications"].update_one(
         {"_id": ObjectId(notification_id)},
@@ -292,10 +272,8 @@ async def mark_notification_read(notification_id: str, authorization: str = Head
     return {"success": True, "notification_id": notification_id}
 
 @app.post("/notifications/read-all")
-async def mark_all_notifications_read(authorization: str = Header(None)):
+async def mark_all_notifications_read(user_data: dict = Depends(verify_session_token)):
     """Mark all unread notifications as read."""
-    await verify_session(authorization)
-    
     result = await db["notifications"].update_many(
         {"status": "unread"},
         {"$set": {"status": "read"}}
@@ -346,7 +324,6 @@ async def home():
         })
 
     # Attendance snapshot logic
-
     yesterday = today.date() - timedelta(days=1)
     past_7_days = [today.date() - timedelta(days=i) for i in range(1, 8)]
     attendance_collection = db["attendance"]
@@ -412,7 +389,10 @@ async def home():
         "note": "This is a public dashboard. No login required."
     }
 
-# Google Auth Signin/Signup
+# ==============================
+# AUTH ROUTES WITH CONSISTENT SESSION HANDLING
+# ==============================
+
 @app.get("/auth/google")
 async def login_with_google():
     google_auth_url = (
@@ -504,23 +484,28 @@ async def google_callback(request: Request):
     # Generate secure session token
     session_token = secrets.token_urlsafe(32)
     
+    # Calculate expiration time for in-memory session
+    expiry_time = datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS)
+
     session_data = {
         "email": user_info["email"],
         "name": user_info.get("name", ""),
         "is_verified": user_info.get("verified_email", False),
         "role": role,
-        "session_token": session_token
     }
 
     try:
-        session_json = json.dumps(session_data)
         logger.info(f"Session created for user: {user_info['email']}")
         
-        # Store with secure token as key
-        await redis_set(session_token, session_json, expiry=SESSION_TTL_SECONDS)
+        # Store session data and expiry in the in-memory dictionary
+        active_sessions[session_token] = {
+            "user_data": session_data,
+            "expires_at": expiry_time
+        }
         
     except Exception as e:
-        logger.error(f"Redis error: {e}")
+        logger.error(f"Session creation failed: {e}")
+        raise HTTPException(status_code=500, detail="Session creation failed")
 
     params = {
         "token": session_token,
@@ -533,11 +518,16 @@ async def google_callback(request: Request):
     if not FRONTEND_URL:
         raise HTTPException(status_code=500, detail="FRONTEND_URL not configured")
     
+    # Redirect with the token for local storage
     redirect_url = f"{FRONTEND_URL}/?{urlencode(params)}"
     return RedirectResponse(url=redirect_url)
-# Logout and session cleared
+
 @app.post("/logout")
 async def logout(request: Request):
+    """
+    Logout endpoint - deletes session from in-memory store
+    Accepts token in request body
+    """
     try:
         body = await request.json()
         token = body.get("token")
@@ -545,33 +535,44 @@ async def logout(request: Request):
         if not token:
             raise HTTPException(status_code=400, detail="Token required")
 
-        await redis_delete(token)
+        # Delete session from in-memory store
+        if token in active_sessions:
+            del active_sessions[token]
+            logger.info(f"Session deleted for token: {token[:10]}...")
+            return JSONResponse(content={
+                "message": "Logged out successfully",
+                "session_deleted": True
+            })
+        else:
+            logger.warning(f"Session not found for token: {token[:10]}...")
+            return JSONResponse(content={
+                "message": "Session already expired or invalid",
+                "session_deleted": False
+            })
 
-        return JSONResponse(content={"message": "Logged out successfully"})
-
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
     except Exception as e:
         logger.error(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail="Logout failed")
 
-# Get employee count
+# ==============================
+# EMPLOYEE ROUTES
+# ==============================
+
 @app.get("/employees/count")
-async def get_employee_count(authorization: str = Header(None)):
-    await verify_session(authorization)
+async def get_employee_count(user_data: dict = Depends(verify_session_token)):
+    """Get total employee count"""
     count = await db.employees.count_documents({})
     return {"count": count}
 
-# Load employees (Excel upload)
 @app.post("/employees")
-async def upload_employees(file: UploadFile = File(...), authorization: str = Header(None)):
+async def upload_employees(
+    file: UploadFile = File(...),
+    user_data: dict = Depends(require_admin)
+):
     """Upload Excel file and safely insert/update employees."""
-    import tempfile
-
-    user_data = await verify_session(authorization)
-    user_role = user_data.get("role", "admin")
     
-    if user_role not in ["admin", "superadmin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     # Check file size
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
@@ -669,16 +670,13 @@ async def upload_employees(file: UploadFile = File(...), authorization: str = He
         except Exception as e:
             logger.error(f"Temp file cleanup failed: {e}")
 
-# Manual employee addition
 @app.post("/employees/manual")
-async def add_employee_manual(employee: EmployeeCreate, authorization: str = Header(None)):
+async def add_employee_manual(
+    employee: EmployeeCreate,
+    user_data: dict = Depends(require_admin)
+):
     """Manually add a single employee to the database"""
-    user_data = await verify_session(authorization)
-    user_role = user_data.get("role", "admin")
     
-    if user_role not in ["admin", "superadmin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     cleaned_emp_no = clean_emp_no(employee.emp_no)
 
     emp_collection = db["employees"]
@@ -710,25 +708,22 @@ async def add_employee_manual(employee: EmployeeCreate, authorization: str = Hea
         logger.error(f"Error adding employee: {e}")
         raise HTTPException(status_code=500, detail="Database error")
 
-# Get employees with filtering and search
 @app.get("/employees")
 async def get_employees(
     emp_type: str = None,
     search: str = None,
     limit: int = 100,
     skip: int = 0,
-    authorization: str = Header(None)
+    user_data: dict = Depends(verify_session_token)
 ):
     """Get list of employees with optional filtering and search"""
-    await verify_session(authorization)
-
+    
     query = {}
     
     if emp_type and emp_type.lower() in ["regular", "apprentice"]:
         query["type"] = emp_type.lower()
     
     if search:
-        # SECURE: Escape regex special characters
         search_regex = {"$regex": escape_regex(search), "$options": "i"}
         query["$or"] = [
             {"name": search_regex},
@@ -762,20 +757,14 @@ async def get_employees(
         logger.error(f"Error retrieving employees: {e}")
         raise HTTPException(status_code=500, detail="Database error")
 
-# Update employee
 @app.put("/employees/{emp_no}")
 async def update_employee(
     emp_no: str,
     request: Request,
-    authorization: str = Header(None)
+    user_data: dict = Depends(require_superadmin)
 ):
     """Update an existing employee's information (superadmin only)"""
-    user_data = await verify_session(authorization)
-
-    if user_data.get("role") != "superadmin":
-        await auto_notify(request, user_data.get("email"), f"update employee {emp_no}")
-        raise HTTPException(status_code=403, detail="Superadmin access required")
-
+    
     try:
         body = await request.json()
     except:
@@ -825,20 +814,14 @@ async def update_employee(
         logger.error(f"Error updating employee: {e}")
         raise HTTPException(status_code=500, detail="Database error")
 
-# Delete employee
 @app.delete("/employees/{emp_no}")
 async def delete_employee(
     request: Request,
     emp_no: str,
-    authorization: str = Header(None)
+    user_data: dict = Depends(require_superadmin)
 ):
     """Delete an employee (superadmin only)"""
-    user_data = await verify_session(authorization)
-
-    if user_data.get("role") != "superadmin":
-        await auto_notify(request, user_data.get("email"), f"delete employee {emp_no}")
-        raise HTTPException(status_code=403, detail="Superadmin access required")
-
+    
     emp_collection = db["employees"]
     existing_employee = await emp_collection.find_one({"emp_no": emp_no})
     
@@ -862,23 +845,20 @@ async def delete_employee(
         logger.error(f"Error deleting employee: {e}")
         raise HTTPException(status_code=500, detail="Database error")
 
-# Load holidays
+# ==============================
+# HOLIDAYS ROUTES
+# ==============================
+
 @app.post("/holidays")
-async def upload_holidays(file: UploadFile = File(...), authorization: str = Header(None)):
+async def upload_holidays(
+    file: UploadFile = File(...),
+    user_data: dict = Depends(require_admin)
+):
     """
     Upload holidays Excel file.
     Accepts any sheet containing 'holiday' in its name (case-insensitive).
-    Requires admin or superadmin role.
-    Stores holidays with 'date' as YYYY-MM-DD strings and 'name'.
     """
     try:
-        user = await verify_session(authorization)
-        role = user.get("role", "")
-        if role not in ("admin", "superadmin"):
-            raise HTTPException(status_code=403, detail="Not authorized")
-
-        # Save file to temp
-        import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[-1]) as tmp:
             tmp.write(await file.read())
             temp_path = tmp.name
@@ -891,19 +871,18 @@ async def upload_holidays(file: UploadFile = File(...), authorization: str = Hea
                 sheet_name = s
                 break
         if not sheet_name:
-            # fallback: if someone named it "HOLIDAYS " etc earlier logic handled header=1
             raise HTTPException(status_code=400, detail="No sheet containing 'holiday' found")
 
         df = pd.read_excel(xls, sheet_name=sheet_name)
         if df.empty:
             raise HTTPException(status_code=400, detail="Holiday sheet is empty")
 
-        # Normalize column names (make lower-case)
+        # Normalize column names
         df.columns = [str(c).strip().lower() for c in df.columns]
 
-        # Accept flexible names - try to detect date and name columns
+        # Detect date and name columns
         possible_date_cols = [c for c in df.columns if "date" in c]
-        possible_name_cols = [c for c in df.columns if ("name" in c) or ("occasion" in c) or ("occasion name" in c)]
+        possible_name_cols = [c for c in df.columns if ("name" in c) or ("occasion" in c)]
 
         if not possible_date_cols or not possible_name_cols:
             raise HTTPException(status_code=400, detail="Expected columns containing 'date' and 'name'")
@@ -912,7 +891,6 @@ async def upload_holidays(file: UploadFile = File(...), authorization: str = Hea
         name_col = possible_name_cols[0]
 
         df = df[[date_col, name_col]].dropna(subset=[date_col, name_col])
-        # Convert dates to ISO yyyy-mm-dd strings
         df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
         df = df[df[date_col].notna()]
 
@@ -926,7 +904,7 @@ async def upload_holidays(file: UploadFile = File(...), authorization: str = Hea
             raise HTTPException(status_code=400, detail="No valid holidays found")
 
         hol_collection = db["holidays"]
-        await hol_collection.delete_many({})  # clear existing
+        await hol_collection.delete_many({})
         await hol_collection.insert_many(holidays)
 
         try:
@@ -934,16 +912,21 @@ async def upload_holidays(file: UploadFile = File(...), authorization: str = Hea
         except Exception:
             pass
 
-        return {"message": f"{len(holidays)} holidays uploaded successfully", "uploaded_by": user.get("email"), "sheet": sheet_name}
+        return {
+            "message": f"{len(holidays)} holidays uploaded successfully",
+            "uploaded_by": user_data.get("email"),
+            "sheet": sheet_name
+        }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Error parsing holidays: {e}")
         raise HTTPException(status_code=500, detail=f"Error parsing holidays: {e}")
-# Fetch holidays
+
 @app.get("/holidays")
 async def get_holidays():
+    """Get all holidays (public endpoint)"""
     holidays = []
     cursor = db["holidays"].find().sort("date", 1)
     async for doc in cursor:
@@ -953,14 +936,17 @@ async def get_holidays():
         })
     return {"holidays": holidays}
 
-# Shift management
+# ==============================
+# SHIFT MANAGEMENT
+# ==============================
+
 @app.post("/shift")
-async def assign_shift(shift_data: ShiftAssign, authorization: str = Header(None)):
-    user_data = await verify_session(authorization)
-
-    if user_data.get("role") != "superadmin":
-        raise HTTPException(status_code=403, detail="Superadmin access required")
-
+async def assign_shift(
+    shift_data: ShiftAssign,
+    user_data: dict = Depends(require_superadmin)
+):
+    """Assign shift to employee (superadmin only)"""
+    
     employee = await db["employees"].find_one({"emp_no": shift_data.emp_no})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -986,8 +972,9 @@ async def assign_shift(shift_data: ShiftAssign, authorization: str = Header(None
 
     return {"message": f"Shift updated for {name} ({shift_data.emp_no}) for {shift_data.month}"}
 
-# Attendance management
-attendance = APIRouter()
+# ==============================
+# ATTENDANCE MANAGEMENT
+# ==============================
 
 REGULAR_ATTENDANCE_LEGEND = {
     "P": "Present",
@@ -1018,9 +1005,21 @@ APPRENTICE_ATTENDANCE_LEGEND = {
     "REL": "Released"
 }
 
-@attendance.post("/attendance")
-async def mark_attendance(attendance_data: AttendanceSubmit, authorization: str = Header(None)):
-    user_data = await verify_session(authorization)
+@app.get("/attendance/legend")
+async def get_attendance_legend():
+    """Returns the legend of attendance codes"""
+    return {
+        "regular": REGULAR_ATTENDANCE_LEGEND,
+        "apprentice": APPRENTICE_ATTENDANCE_LEGEND,
+        "message": "Attendance code legends"
+    }
+
+@app.post("/attendance")
+async def mark_attendance(
+    attendance_data: AttendanceSubmit,
+    user_data: dict = Depends(verify_session_token)
+):
+    """Mark attendance for an employee"""
     
     updated_by = user_data.get("email")
     role = user_data.get("role", "admin")
@@ -1098,35 +1097,221 @@ async def mark_attendance(attendance_data: AttendanceSubmit, authorization: str 
         "summary": summary
     }
 
-app.include_router(attendance)
+# ==============================
+# BULK ATTENDANCE UPLOAD FROM EXCEL
+# ==============================
 
-# Index creation for faster queries
-@app.on_event("startup")
-async def setup_indexes():
-    await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
-    await db["employees"].create_index("emp_no")
-    await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
-    logger.info("Database indexes created")
+@app.post("/attendance/upload")
+async def upload_bulk_attendance(
+    file: UploadFile = File(...),
+    user_data: dict = Depends(require_admin)
+):
+    """
+    Upload bulk attendance from Excel file.
+    
+    Expected Excel format:
+    - First column: Employee Number
+    - Subsequent columns: Dates (in DD-MM-YYYY format as headers)
+    - Cell values: Attendance codes (P, A, CL, etc.)
+    - Sheet name should contain month info or be specified
+    
+    Example:
+    | Employee No | 11-07-2025 | 12-07-2025 | 13-07-2025 |
+    |-------------|------------|------------|------------|
+    | 12345       | P          | P          | A          |
+    | 12346       | P          | CL         | P          |
+    """
+    
+    # Check file size
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 10MB)")
 
-# Attendance legend
-@app.get("/attendance/legend")
-async def get_attendance_legend():
-    """Returns the legend of attendance codes"""
-    return {
-        "regular": REGULAR_ATTENDANCE_LEGEND,
-        "apprentice": APPRENTICE_ATTENDANCE_LEGEND,
-        "message": "Attendance code legends"
-    }
+    suffix = os.path.splitext(file.filename)[-1]
+    if suffix not in ['.xlsx', '.xls']:
+        raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are supported")
 
-# Retrieve attendance data
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(contents)
+        temp_path = tmp.name
+
+    try:
+        # Read the Excel file
+        xls = pd.ExcelFile(temp_path)
+        
+        # Use first sheet or find attendance sheet
+        sheet_name = xls.sheet_names[0]
+        for s in xls.sheet_names:
+            if "attendance" in s.lower():
+                sheet_name = s
+                break
+        
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+        
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Excel sheet is empty")
+
+        # Normalize column names
+        df.columns = [str(col).strip() for col in df.columns]
+        
+        # Identify employee number column
+        emp_col = None
+        for col in df.columns:
+            if any(keyword in col.lower() for keyword in ['emp', 'employee', 'no', 'number']):
+                emp_col = col
+                break
+        
+        if not emp_col:
+            raise HTTPException(status_code=400, detail="Could not find employee number column")
+
+        # Get date columns (all columns except employee column)
+        date_columns = [col for col in df.columns if col != emp_col]
+        
+        if not date_columns:
+            raise HTTPException(status_code=400, detail="No date columns found")
+
+        # Parse dates and determine month
+        parsed_dates = {}
+        months_found = set()
+        
+        for col in date_columns:
+            try:
+                # Try parsing the column name as a date
+                date_obj = pd.to_datetime(col, dayfirst=True, errors='coerce')
+                if pd.notna(date_obj):
+                    date_str = date_obj.strftime("%d-%m-%Y")
+                    parsed_dates[col] = date_str
+                    month_key = date_obj.strftime("%Y-%m")
+                    months_found.add(month_key)
+            except:
+                logger.warning(f"Could not parse column as date: {col}")
+                continue
+        
+        if not parsed_dates:
+            raise HTTPException(status_code=400, detail="Could not parse any date columns")
+        
+        if len(months_found) > 1:
+            raise HTTPException(status_code=400, detail=f"Multiple months found in data: {months_found}. Please upload one month at a time.")
+        
+        month = list(months_found)[0]
+        
+        # Process each employee row
+        processed_count = 0
+        error_count = 0
+        errors = []
+        
+        emp_collection = db["employees"]
+        attendance_collection = db["attendance"]
+        
+        for idx, row in df.iterrows():
+            try:
+                emp_no = clean_emp_no(row[emp_col])
+                
+                if not emp_no or pd.isna(emp_no):
+                    continue
+                
+                # Get employee details
+                emp = await emp_collection.find_one({"emp_no": emp_no})
+                if not emp:
+                    errors.append(f"Row {idx+2}: Employee {emp_no} not found in database")
+                    error_count += 1
+                    continue
+                
+                emp_name = emp.get("name", "")
+                emp_type = emp.get("type", "").lower()
+                
+                # Build attendance records
+                attendance_records = {}
+                for original_col, date_str in parsed_dates.items():
+                    attendance_code = str(row[original_col]).strip().upper()
+                    
+                    # Skip empty cells
+                    if pd.isna(row[original_col]) or attendance_code in ['', 'NAN', 'NONE']:
+                        continue
+                    
+                    # Validate attendance code
+                    valid_codes = REGULAR_ATTENDANCE_LEGEND.keys() if emp_type == "regular" else APPRENTICE_ATTENDANCE_LEGEND.keys()
+                    
+                    if not any(attendance_code.startswith(valid) for valid in valid_codes):
+                        errors.append(f"Row {idx+2}, Employee {emp_no}: Invalid code '{attendance_code}' for {emp_type}")
+                        continue
+                    
+                    attendance_records[date_str] = attendance_code
+                
+                if not attendance_records:
+                    errors.append(f"Row {idx+2}: No valid attendance data for employee {emp_no}")
+                    error_count += 1
+                    continue
+                
+                # Check if attendance already exists
+                existing = await attendance_collection.find_one({"emp_no": emp_no, "month": month})
+                
+                if existing and user_data.get("role") != "superadmin":
+                    errors.append(f"Row {idx+2}: Attendance for {emp_no} already exists. Only superadmin can modify.")
+                    error_count += 1
+                    continue
+                
+                # Save attendance
+                doc = {
+                    "emp_no": emp_no,
+                    "emp_name": emp_name,
+                    "type": emp_type,
+                    "month": month,
+                    "records": attendance_records,
+                    "updated_by": user_data.get("email"),
+                    "updated_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
+                }
+                
+                if existing:
+                    await attendance_collection.replace_one({"_id": existing["_id"]}, doc)
+                else:
+                    await attendance_collection.insert_one(doc)
+                
+                processed_count += 1
+                
+            except Exception as e:
+                logger.error(f"Error processing row {idx+2}: {e}")
+                errors.append(f"Row {idx+2}: {str(e)}")
+                error_count += 1
+                continue
+        
+        # Clean up temp file
+        try:
+            os.remove(temp_path)
+        except Exception as e:
+            logger.error(f"Temp file cleanup failed: {e}")
+        
+        return {
+            "message": "Bulk attendance upload completed",
+            "summary": {
+                "total_rows": len(df),
+                "processed": processed_count,
+                "errors": error_count,
+                "month": month
+            },
+            "errors": errors[:50] if errors else [],
+            "uploaded_by": user_data.get("email")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error processing bulk attendance: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+    finally:
+        try:
+            os.remove(temp_path)
+        except:
+            pass
+
 @app.get("/attendance")
 async def get_attendance(
     emp_no: str = None,
     month: str = None,
-    authorization: str = Header(None)
+    user_data: dict = Depends(verify_session_token)
 ):
-    await verify_session(authorization)
-
+    """Get attendance records with optional filters"""
+    
     filter_query = {}
 
     if emp_no:
@@ -1173,14 +1358,13 @@ async def get_attendance(
         "count": len(attendance_records)
     }
 
-# Monthly attendance summary
 @app.get("/attendance/monthly")
 async def get_monthly_summary(
     month: str,
-    authorization: str = Header(None)
+    user_data: dict = Depends(verify_session_token)
 ):
-    await verify_session(authorization)
-
+    """Get monthly attendance summary"""
+    
     try:
         year, month_num = map(int, month.split("-"))
         if not (1 <= month_num <= 12):
@@ -1220,14 +1404,13 @@ async def get_monthly_summary(
         "total_employees": len(records)
     }
 
-# Employee attendance history
 @app.get("/attendance/employee/{emp_no}")
 async def get_employee_history(
     emp_no: str,
-    authorization: str = Header(None)
+    user_data: dict = Depends(verify_session_token)
 ):
-    await verify_session(authorization)
-
+    """Get attendance history for a specific employee"""
+    
     employee = await db["employees"].find_one({"emp_no": emp_no})
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
@@ -1258,10 +1441,16 @@ async def get_employee_history(
         "total_months": len(history)
     }
 
-# Export attendance records
+# ==============================
+# EXPORT ROUTES
+# ==============================
+
 @app.get("/export_regular")
-async def export_regular(month: str = "2025-07", authorization: str = Header(None)):
-    await verify_session(authorization)
+async def export_regular(
+    month: str = "2025-07",
+    user_data: dict = Depends(verify_session_token)
+):
+    """Export regular employee attendance to Excel"""
     stream = await create_attendance_excel(db, "regular", month)
     return StreamingResponse(
         stream, 
@@ -1270,11 +1459,26 @@ async def export_regular(month: str = "2025-07", authorization: str = Header(Non
     )
 
 @app.get("/export_apprentice")
-async def export_apprentice(month: str = "2025-07", authorization: str = Header(None)):
-    await verify_session(authorization)
+async def export_apprentice(
+    month: str = "2025-07",
+    user_data: dict = Depends(verify_session_token)
+):
+    """Export apprentice attendance to Excel"""
     stream = await create_attendance_excel(db, "apprentice", month)
     return StreamingResponse(
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=apprentice_attendance_{month}.xlsx"}
     )
+
+# ==============================
+# STARTUP EVENTS
+# ==============================
+
+@app.on_event("startup")
+async def setup_indexes():
+    """Create database indexes for faster queries"""
+    await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
+    await db["employees"].create_index("emp_no")
+    await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
+    logger.info("Database indexes created")
