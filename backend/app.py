@@ -1032,3 +1032,20 @@ async def export_apprentice(request: Request, month: str = "2025-07"):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=apprentice_attendance_{month}.xlsx"}
     )
+
+
+@app.get("/me")
+async def get_current_user(request: Request):
+    """
+    Returns the currently logged-in user's session data.
+    """
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated or session expired.")
+
+    user = await db["users"].find_one({"email": session["email"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in database.")
+
+    user.pop("_id", None)
+    return {"message": "User authenticated", "user": user}
