@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, Request, HTTPException, APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -6,26 +6,18 @@ import os
 import json
 import httpx
 import pytz
+import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict
 import calendar
 from io import BytesIO
 from excelmaker import create_attendance_excel
+from sessions import create_session, get_session, delete_session
 import pandas as pd
 from fastapi import UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import urlencode
-import secrets
-import re
-import html
-import logging
-from pydantic import BaseModel, Field, validator
-from collections import defaultdict
-import tempfile
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -44,164 +36,27 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 
-# Security Config
-SUPERADMIN_EMAILS = [email.strip() for email in os.getenv("SUPERADMIN_EMAILS", "").split(",") if email.strip()]
+# Configurable superadmin emails and allowed origins
+SUPERADMINS = [email.strip() for email in os.getenv("SUPERADMIN_EMAILS", "").split(",") if email.strip()]
 ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",") if origin.strip()]
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-SESSION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 
 # Timezone setup for Kolkata
 kolkata_tz = pytz.timezone("Asia/Kolkata")
 
-# CORS Middleware
+# App CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Security Headers Middleware
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000"
-    return response
+# Employee sheet
+EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 
-# ==============================
-# CENTRALIZED SESSION MANAGEMENT (IN-MEMORY)
-# ==============================
-
-# Global in-memory dictionary for active sessions
-# Key: session_token (str)
-# Value: {"user_data": user_data_dict, "expires_at": datetime object}
-active_sessions: Dict[str, Dict] = {}
-
-
-async def verify_session_token(authorization: Optional[str] = Header(None)) -> dict:
-    """
-    CENTRALIZED session verification - uses in-memory store.
-    - Validates token from Authorization header (Bearer <token>)
-    - Checks in-memory store for session and expiration
-    - Refreshes session TTL on valid access
-    - Returns user data dict
-    
-    Raises HTTPException(403) if invalid/expired
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=403, detail="Bearer token required in Authorization header")
-    
-    token = authorization[7:].strip()
-    
-    if not token:
-        raise HTTPException(status_code=403, detail="Empty authorization token")
-    
-    # Check in-memory store
-    session_entry = active_sessions.get(token)
-    
-    if not session_entry:
-        raise HTTPException(status_code=403, detail="Session expired or invalid. Please login again.")
-    
-    # Check expiration
-    if datetime.now() > session_entry["expires_at"]:
-        # Delete expired session
-        del active_sessions[token]
-        logger.info(f"Session expired and deleted for token: {token[:10]}...")
-        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
-    
-    # Session is valid: get user data
-    user_data = session_entry["user_data"]
-    
-    # REFRESH SESSION TTL - extends session by 7 days on each valid access
-    new_expiry = datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS)
-    session_entry["expires_at"] = new_expiry
-    logger.info(f"Session refreshed for user: {user_data['email']}")
-    
-    return user_data
-
-
-async def require_admin(user_data: dict = Depends(verify_session_token)) -> dict:
-    """Dependency to require admin or superadmin role"""
-    if user_data.get("role") not in ["admin", "superadmin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user_data
-
-
-async def require_superadmin(user_data: dict = Depends(verify_session_token)) -> dict:
-    """Dependency to require superadmin role"""
-    if user_data.get("role") != "superadmin":
-        raise HTTPException(status_code=403, detail="Superadmin access required")
-    return user_data
-
-# ==============================
-# Security Helper Functions
-# ==============================
-
-def escape_regex(text: str) -> str:
-    """Escape regex special characters"""
-    return re.escape(text)
-
-def sanitize_input(text: str) -> str:
-    """Sanitize user input to prevent XSS"""
-    return html.escape(text.strip())
-
-def clean_emp_no(emp_no):
-    """Remove .0 from employee numbers and clean whitespace"""
-    emp_str = str(emp_no).strip()
-    if emp_str.endswith('.0'):
-        emp_str = emp_str[:-2]
-    return emp_str
-
-# ==============================
-# Pydantic Models for Validation
-# ==============================
-
-class EmployeeCreate(BaseModel):
-    emp_no: str = Field(..., min_length=1, max_length=20)
-    name: str = Field(..., min_length=1, max_length=100)
-    designation: str = Field(..., min_length=1, max_length=100)
-    type: str
-    
-    @validator('type')
-    def validate_type(cls, v):
-        if v.lower() not in ['regular', 'apprentice']:
-            raise ValueError('Type must be regular or apprentice')
-        return v.lower()
-    
-    @validator('name', 'designation')
-    def sanitize_string(cls, v):
-        return sanitize_input(v)
-
-class AttendanceSubmit(BaseModel):
-    emp_no: str = Field(..., min_length=1, max_length=20)
-    month: str = Field(..., pattern=r'^\d{4}-\d{2}$')
-    attendance: Dict[str, str]
-    
-    @validator('attendance')
-    def validate_attendance(cls, v):
-        if not v:
-            raise ValueError('Attendance cannot be empty')
-        # Validate date format
-        for date_str in v.keys():
-            try:
-                datetime.strptime(date_str, "%d-%m-%Y")
-            except:
-                raise ValueError(f'Invalid date format: {date_str}')
-        return v
-
-class ShiftAssign(BaseModel):
-    emp_no: str = Field(..., min_length=1, max_length=20)
-    month: str = Field(..., pattern=r'^\d{4}-\d{2}$')
-    shift: Dict
-
-# ==============================
 # Routes
-# ==============================
-
 @app.get("/healthz")
 async def health_check():
     return {"message": "Attendify is active!", "status": "OK"}
@@ -212,7 +67,9 @@ async def health_check():
 active_connections: list[WebSocket] = []
 
 async def notify_superadmins(message: dict):
-    """Push a notification to all connected superadmin sockets."""
+    """
+    Push a notification to all connected superadmin sockets.
+    """
     for connection in active_connections:
         try:
             await connection.send_text(json.dumps(message))
@@ -220,16 +77,19 @@ async def notify_superadmins(message: dict):
             continue
 
 async def auto_notify(request: Request, actor: str, action: str):
-    """Auto-generate a notification when admin tries something blocked."""
+    """
+    Auto-generate a notification when admin tries something blocked.
+    Uses Asia/Kolkata timezone and dd-mm-yyyy HH:MM:SS format.
+    """
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
 
     notification = {
         "title": "Unauthorized Action Blocked",
         "message": f"User {actor} tried to {action}.",
-        "timestamp": now.strftime("%d-%m-%Y %H:%M:%S"),
+        "timestamp": now.strftime("%d-%m-%Y %H:%M:%S"),  # Kolkata format
         "status": "unread",
-        "expireAt": now + timedelta(days=30)
+        "expireAt": now + timedelta(days=30)  # Kolkata time + 30 days
     }
 
     result = await db["notifications"].insert_one(notification)
@@ -239,28 +99,27 @@ async def auto_notify(request: Request, actor: str, action: str):
     await notify_superadmins(notification)
 
 @app.get("/notifications")
-async def get_notifications(
-    status: str = None,
-    user_data: dict = Depends(verify_session_token)
-):
-    """Fetch notifications. Filter by status if provided."""
+async def get_notifications(status: str = None):
+    """
+    Fetch notifications. Filter by status if provided.
+    """
     query = {}
     if status:
         query["status"] = status
 
     notifications = await db["notifications"].find(query).sort("expireAt", -1).to_list(100)
-    
+
+    # Convert ObjectId → string for all results
     for n in notifications:
         n["_id"] = str(n["_id"])
 
     return notifications
 
 @app.post("/notifications/read/{notification_id}")
-async def mark_notification_read(
-    notification_id: str,
-    user_data: dict = Depends(verify_session_token)
-):
-    """Mark a notification as read by ID."""
+async def mark_notification_read(notification_id: str):
+    """
+    Mark a notification as read by ID.
+    """
     from bson import ObjectId
     result = await db["notifications"].update_one(
         {"_id": ObjectId(notification_id)},
@@ -272,8 +131,10 @@ async def mark_notification_read(
     return {"success": True, "notification_id": notification_id}
 
 @app.post("/notifications/read-all")
-async def mark_all_notifications_read(user_data: dict = Depends(verify_session_token)):
-    """Mark all unread notifications as read."""
+async def mark_all_notifications_read():
+    """
+    Mark all unread notifications as read.
+    """
     result = await db["notifications"].update_many(
         {"status": "unread"},
         {"$set": {"status": "read"}}
@@ -282,18 +143,22 @@ async def mark_all_notifications_read(user_data: dict = Depends(verify_session_t
 
 @app.websocket("/notifications/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """Superadmin WebSocket connection for live notifications."""
+    """
+    Superadmin WebSocket connection for live notifications.
+    """
     await websocket.accept()
     active_connections.append(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            await websocket.receive_text()  # keep alive
     except WebSocketDisconnect:
         active_connections.remove(websocket)
+
 
 # Home Route
 @app.get("/")
 async def home():
+    # Get today's date and current month using Kolkata timezone
     today = datetime.now(kolkata_tz)
     month = today.strftime("%Y-%m")
     year, month_num = today.year, today.month
@@ -307,7 +172,7 @@ async def home():
         if day != 0 and i == 6
     ]
 
-    # Holidays from DB
+    # Holidays from DB (store in YYYY-MM-DD for sorting, format for display)
     start_date = datetime(year, month_num, 1).strftime("%Y-%m-%d")
     end_day = calendar.monthrange(year, month_num)[1]
     end_date = datetime(year, month_num, end_day).strftime("%Y-%m-%d")
@@ -323,7 +188,9 @@ async def home():
             "name": doc["name"]
         })
 
-    # Attendance snapshot logic
+    # Attendance snapshot logic for home page
+    from collections import defaultdict
+
     yesterday = today.date() - timedelta(days=1)
     past_7_days = [today.date() - timedelta(days=i) for i in range(1, 8)]
     attendance_collection = db["attendance"]
@@ -389,10 +256,8 @@ async def home():
         "note": "This is a public dashboard. No login required."
     }
 
-# ==============================
-# AUTH ROUTES WITH CONSISTENT SESSION HANDLING
-# ==============================
 
+# Google Auth Signin/Signup
 @app.get("/auth/google")
 async def login_with_google():
     google_auth_url = (
@@ -406,16 +271,14 @@ async def login_with_google():
     )
     return RedirectResponse(url=google_auth_url)
 
+
 @app.get("/auth/google/callback")
 async def google_callback(request: Request):
     code = request.query_params.get("code")
     error = request.query_params.get("error")
 
     if error:
-        if error == "access_denied":
-            raise HTTPException(status_code=400, detail="User denied access")
-        else:
-            raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
+        raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
 
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code not found")
@@ -429,41 +292,35 @@ async def google_callback(request: Request):
         "grant_type": "authorization_code",
     }
 
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
     try:
         async with httpx.AsyncClient() as client:
-            token_response = await client.post(token_url, data=token_data, headers=headers)
+            token_response = await client.post(token_url, data=token_data)
             token_response.raise_for_status()
             token_json = token_response.json()
     except httpx.HTTPError as e:
-        logger.error(f"Token request error: {e}")
-        raise HTTPException(status_code=500, detail="Authentication failed")
+        raise HTTPException(status_code=500, detail=f"Token request failed: {str(e)}")
 
     access_token = token_json.get("access_token")
     if not access_token:
-        logger.error("Token response missing access_token")
-        raise HTTPException(status_code=500, detail="Authentication failed")
+        raise HTTPException(status_code=500, detail="Access token missing")
 
-    # Get user info
-    try:
-        async with httpx.AsyncClient() as client:
-            userinfo_response = await client.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            userinfo_response.raise_for_status()
-            user_info = userinfo_response.json()
+    # Fetch user info
+    async with httpx.AsyncClient() as client:
+        userinfo_response = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        userinfo_response.raise_for_status()
+        user_info = userinfo_response.json()
 
-            user_email = user_info["email"]
-            role = "superadmin" if user_email in SUPERADMIN_EMAILS else "admin"
-    except httpx.HTTPError as e:
-        logger.error(f"Userinfo request error: {e}")
-        raise HTTPException(status_code=500, detail="Authentication failed")
+    user_email = user_info["email"]
+    role = "superadmin" if user_email in SUPERADMINS else "admin"
+    if role == "superadmin":
+        print(f"[AUTH] Superadmin logged in: {user_email}")
 
-    # Create user data
+    # Store or update in DB
     user_data = {
-        "email": user_info["email"],
+        "email": user_email,
         "is_verified": user_info.get("verified_email", False),
         "name": user_info.get("name", ""),
         "picture": user_info.get("picture", ""),
@@ -471,132 +328,80 @@ async def google_callback(request: Request):
         "created_at": datetime.now(kolkata_tz).isoformat()
     }
 
-    # Save user in MongoDB
     try:
-        await collection.update_one(
-            {"email": user_data["email"]},
-            {"$set": user_data},
-            upsert=True
-        )
+        existing_user = await collection.find_one({"email": user_email})
+        if not existing_user:
+            await collection.insert_one(user_data)
     except Exception as e:
-        logger.error(f"MongoDB error: {e}")
+        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
 
-    # Generate secure session token
-    session_token = secrets.token_urlsafe(32)
-    
-    # Calculate expiration time for in-memory session
-    expiry_time = datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS)
-
+    # Create session
     session_data = {
-        "email": user_info["email"],
+        "email": user_email,
         "name": user_info.get("name", ""),
         "is_verified": user_info.get("verified_email", False),
-        "role": role,
+        "role": role
     }
 
-    try:
-        logger.info(f"Session created for user: {user_info['email']}")
-        
-        # Store session data and expiry in the in-memory dictionary
-        active_sessions[session_token] = {
-            "user_data": session_data,
-            "expires_at": expiry_time
-        }
-        
-    except Exception as e:
-        logger.error(f"Session creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Session creation failed")
+    response = RedirectResponse(url=f"{FRONTEND_URL}/?{urlencode(session_data)}")
+    await create_session(response, session_data)
+    return response
 
-    params = {
-        "token": session_token,
-        "email": user_info["email"],
-        "name": user_info.get("name", ""),
-        "picture": user_info.get("picture", ""),
-        "role": role,
-    }
-    
-    if not FRONTEND_URL:
-        raise HTTPException(status_code=500, detail="FRONTEND_URL not configured")
-    
-    # Redirect with the token for local storage
-    redirect_url = f"{FRONTEND_URL}/?{urlencode(params)}"
-    return RedirectResponse(url=redirect_url)
 
+# Logout and session cleared
 @app.post("/logout")
 async def logout(request: Request):
     """
-    Logout endpoint - deletes session from in-memory store
-    Accepts token in request body
+    Logout endpoint — clears the user's session and cookie.
     """
     try:
-        body = await request.json()
-        token = body.get("token")
-
-        if not token:
-            raise HTTPException(status_code=400, detail="Token required")
-
-        # Delete session from in-memory store
-        if token in active_sessions:
-            del active_sessions[token]
-            logger.info(f"Session deleted for token: {token[:10]}...")
-            return JSONResponse(content={
-                "message": "Logged out successfully",
-                "session_deleted": True
-            })
-        else:
-            logger.warning(f"Session not found for token: {token[:10]}...")
-            return JSONResponse(content={
-                "message": "Session already expired or invalid",
-                "session_deleted": False
-            })
-
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        response = JSONResponse(content={"message": "User logged out successfully."})
+        await delete_session(request, response)
+        return response
     except Exception as e:
-        logger.error(f"Logout error: {e}")
+        print(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail="Logout failed")
 
-# ==============================
-# EMPLOYEE ROUTES
-# ==============================
 
+# Helper function to clean employee number
+def clean_emp_no(emp_no):
+    """Remove .0 from employee numbers and clean whitespace"""
+    emp_str = str(emp_no).strip()
+    # Remove .0 if it exists at the end
+    if emp_str.endswith('.0'):
+        emp_str = emp_str[:-2]
+    return emp_str
+
+# Get employee count
 @app.get("/employees/count")
-async def get_employee_count(user_data: dict = Depends(verify_session_token)):
-    """Get total employee count"""
+async def get_employee_count():
     count = await db.employees.count_documents({})
     return {"count": count}
 
+# Load employees (Excel upload)
 @app.post("/employees")
-async def upload_employees(
-    file: UploadFile = File(...),
-    user_data: dict = Depends(require_admin)
-):
-    """Upload Excel file and safely insert/update employees."""
-    
-    # Check file size
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+async def upload_employees(file: UploadFile = File(...)):
+    import tempfile
 
     suffix = os.path.splitext(file.filename)[-1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
         tmp.write(contents)
         temp_path = tmp.name
 
     all_employees = []
-    added, updated = 0, 0
-
     try:
         regular_sheets = [
             "ATTENDANCE_SSEE_SW_KGP_I",
             "ATTENDANCE_SSEE_SW_KGP_II",
-            "ATTENDANCE_SSEE_SW_KGP_III",
+            "ATTENDANCE_SSEE_SW_KGP_III"
         ]
         apprentice_sheet = "APPRENTICE ATTENDANCE"
 
-        def read_sheet(sheet_name: str, skiprows: int, emp_type: str):
+        # Regular Employees
+        for sheet in regular_sheets:
             try:
-                df = pd.read_excel(temp_path, sheet_name=sheet_name, skiprows=skiprows)
+                df = pd.read_excel(temp_path, sheet_name=sheet, skiprows=6)
                 df.rename(columns={
                     "S. NO.": "S_No",
                     "NAME": "Name",
@@ -604,127 +409,134 @@ async def upload_employees(
                     "EMPLOYEE NO.": "Employee_No"
                 }, inplace=True)
                 df = df.dropna(subset=["Employee_No"])
+
                 for _, row in df.iterrows():
                     all_employees.append({
                         "emp_no": clean_emp_no(row["Employee_No"]),
-                        "name": sanitize_input(str(row["Name"])),
-                        "designation": sanitize_input(str(row["Designation"])),
-                        "type": emp_type,
-                        "created_at": datetime.now(kolkata_tz).isoformat(),
+                        "name": str(row["Name"]).strip(),
+                        "designation": str(row["Designation"]).strip(),
+                        "type": "regular",
+                        "created_at": datetime.now(kolkata_tz).isoformat()
                     })
             except Exception as e:
-                logger.error(f"Error reading sheet {sheet_name}: {e}")
+                print(f"Error reading regular sheet {sheet}: {e}")
+                continue
 
-        for sheet in regular_sheets:
-            read_sheet(sheet, skiprows=6, emp_type="regular")
+        # Apprentice Employees
+        try:
+            df = pd.read_excel(temp_path, sheet_name=apprentice_sheet, skiprows=8)
+            df.rename(columns={
+                "S. NO.": "S_No",
+                "NAME": "Name",
+                "DESIGNATION": "Designation",
+                "EMPLOYEE NO.": "Employee_No"
+            }, inplace=True)
+            df = df.dropna(subset=["Employee_No"])
 
-        read_sheet(apprentice_sheet, skiprows=8, emp_type="apprentice")
+            for _, row in df.iterrows():
+                all_employees.append({
+                    "emp_no": clean_emp_no(row["Employee_No"]),
+                    "name": str(row["Name"]).strip(),
+                    "designation": str(row["Designation"]).strip(),
+                    "type": "apprentice",
+                    "created_at": datetime.now(kolkata_tz).isoformat()
+                })
+        except Exception as e:
+            print(f"Error reading apprentice sheet: {e}")
 
         if not all_employees:
-            raise HTTPException(status_code=400, detail="No employee data found")
+            raise HTTPException(status_code=400, detail="No employee data found.")
+
+        # Print some employee numbers for debugging
+        print(f"Sample employee numbers: {[emp['emp_no'] for emp in all_employees[:5]]}")
 
         emp_collection = db["employees"]
+        await emp_collection.delete_many({})
+        await emp_collection.insert_many(all_employees)
 
-        for emp in all_employees:
-            cleaned_no = emp["emp_no"]
-            existing = await emp_collection.find_one({"emp_no": cleaned_no})
-
-            if existing:
-                updates = {}
-                if existing.get("name") != emp["name"].title():
-                    updates["name"] = emp["name"].title()
-                if existing.get("designation") != emp["designation"].title():
-                    updates["designation"] = emp["designation"].title()
-                if existing.get("type") != emp["type"]:
-                    updates["type"] = emp["type"]
-
-                if updates:
-                    updates["updated_at"] = datetime.now(kolkata_tz).isoformat()
-                    updates["updated_by"] = user_data.get("email")
-                    await emp_collection.update_one({"emp_no": cleaned_no}, {"$set": updates})
-                    updated += 1
-            else:
-                emp["name"] = emp["name"].title()
-                emp["designation"] = emp["designation"].title()
-                emp["created_by"] = user_data.get("email")
-                await emp_collection.insert_one(emp)
-                added += 1
-
-        return {
-            "message": "Employee data processed successfully",
-            "summary": {
-                "added": added,
-                "updated": updated,
-                "total_processed": len(all_employees),
-            },
-            "status": "success"
-        }
+        return {"message": f"{len(all_employees)} employees uploaded successfully."}
 
     except Exception as e:
-        logger.error(f"Error processing employees: {e}")
-        raise HTTPException(status_code=500, detail="Error processing employees")
+        raise HTTPException(status_code=500, detail=f"Error processing employees: {e}")
 
     finally:
-        try:
-            os.remove(temp_path)
-        except Exception as e:
-            logger.error(f"Temp file cleanup failed: {e}")
+        os.remove(temp_path)
 
-@app.post("/employees/manual")
-async def add_employee_manual(
-    employee: EmployeeCreate,
-    user_data: dict = Depends(require_admin)
-):
-    """Manually add a single employee to the database"""
-    
-    cleaned_emp_no = clean_emp_no(employee.emp_no)
 
+# Manual employee addition@app.post("/employees/manual")
+async def add_employee_manual(request: Request):
+    """
+    Manually add a single employee to the database
+    Requires admin or superadmin authentication
+    """
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
+
+    user_email = session["email"]
+    user_role = session["role"]
+
+    # Only allow admins and superadmins
+    if user_role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Insufficient privileges. Admin access required.")
+
+    try:
+        body = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON format")
+
+    emp_no = body.get("emp_no", "").strip()
+    name = body.get("name", "").strip()
+    designation = body.get("designation", "").strip()
+    emp_type = body.get("type", "").strip().lower()
+
+    if not emp_no or not name or not designation or emp_type not in ["regular", "apprentice"]:
+        raise HTTPException(status_code=400, detail="Missing or invalid employee data")
+
+    cleaned_emp_no = clean_emp_no(emp_no)
     emp_collection = db["employees"]
     existing_employee = await emp_collection.find_one({"emp_no": cleaned_emp_no})
-    
+
     if existing_employee:
-        raise HTTPException(status_code=409, detail=f"Employee {cleaned_emp_no} already exists")
+        raise HTTPException(status_code=409, detail=f"Employee with number {cleaned_emp_no} already exists")
 
     employee_data = {
         "emp_no": cleaned_emp_no,
-        "name": employee.name.title(),
-        "designation": employee.designation.title(),
-        "type": employee.type,
-        "created_by": user_data.get("email"),
+        "name": name.title(),
+        "designation": designation.title(),
+        "type": emp_type,
+        "created_by": user_email,
         "created_at": datetime.now(kolkata_tz).isoformat(),
     }
 
-    try:
-        await emp_collection.insert_one(employee_data)
-        employee_data.pop('_id', None)
-        
-        return {
-            "message": f"Employee {employee.name.title()} added successfully",
-            "employee": employee_data,
-            "status": "success"
-        }
+    await emp_collection.insert_one(employee_data)
 
-    except Exception as e:
-        logger.error(f"Error adding employee: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+    return {
+        "message": f"Employee {name.title()} ({cleaned_emp_no}) added successfully",
+        "employee": employee_data,
+        "added_by": session.get("name", user_email),
+        "status": "success"
+    }
 
-@app.get("/employees")
+
+# Get employees with filtering and search@app.get("/employees")
 async def get_employees(
+    request: Request,
     emp_type: str = None,
     search: str = None,
     limit: int = 100,
-    skip: int = 0,
-    user_data: dict = Depends(verify_session_token)
+    skip: int = 0
 ):
-    """Get list of employees with optional filtering and search"""
-    
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
+
     query = {}
-    
     if emp_type and emp_type.lower() in ["regular", "apprentice"]:
         query["type"] = emp_type.lower()
-    
+
     if search:
-        search_regex = {"$regex": escape_regex(search), "$options": "i"}
+        search_regex = {"$regex": search, "$options": "i"}
         query["$or"] = [
             {"name": search_regex},
             {"emp_no": search_regex},
@@ -732,201 +544,148 @@ async def get_employees(
         ]
 
     emp_collection = db["employees"]
-    
-    try:
-        total_count = await emp_collection.count_documents(query)
-        cursor = emp_collection.find(query).skip(skip).limit(limit).sort("emp_no", 1)
-        
-        employees = []
-        async for emp in cursor:
-            emp.pop('_id', None)
-            employees.append(emp)
+    total_count = await emp_collection.count_documents(query)
+    cursor = emp_collection.find(query).skip(skip).limit(limit).sort("emp_no", 1)
 
-        return {
-            "message": "Employees retrieved successfully",
-            "employees": employees,
-            "pagination": {
-                "total": total_count,
-                "returned": len(employees),
-                "skip": skip,
-                "limit": limit
-            }
-        }
+    employees = []
+    async for emp in cursor:
+        emp.pop("_id", None)
+        employees.append(emp)
 
-    except Exception as e:
-        logger.error(f"Error retrieving employees: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+    return {
+        "message": "Employees retrieved successfully",
+        "employees": employees,
+        "pagination": {"total": total_count, "returned": len(employees), "skip": skip, "limit": limit},
+        "filters_applied": {"type": emp_type, "search": search}
+    }
 
+
+# Update employee
 @app.put("/employees/{emp_no}")
-async def update_employee(
-    emp_no: str,
-    request: Request,
-    user_data: dict = Depends(require_superadmin)
-):
-    """Update an existing employee's information (superadmin only)"""
-    
+async def update_employee(emp_no: str, request: Request):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired.")
+
+    user_email = session["email"]
+    user_role = session["role"]
+
+    if user_role != "superadmin":
+        await auto_notify(request, user_email, f"update employee {emp_no}")
+        raise HTTPException(status_code=403, detail="Only superadmins can update employees")
+
     try:
         body = await request.json()
     except:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail="Invalid JSON format")
 
     emp_collection = db["employees"]
     existing_employee = await emp_collection.find_one({"emp_no": emp_no})
-    
     if not existing_employee:
         raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
 
     update_data = {}
-    
     if "name" in body and body["name"].strip():
-        update_data["name"] = sanitize_input(body["name"]).title()
-    
+        update_data["name"] = body["name"].strip().title()
     if "designation" in body and body["designation"].strip():
-        update_data["designation"] = sanitize_input(body["designation"]).title()
-    
+        update_data["designation"] = body["designation"].strip().title()
     if "type" in body and body["type"].lower() in ["regular", "apprentice"]:
         update_data["type"] = body["type"].lower()
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
-    update_data["updated_by"] = user_data.get("email")
+    update_data["updated_by"] = user_email
     update_data["updated_at"] = datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
 
-    try:
-        result = await emp_collection.update_one(
-            {"emp_no": emp_no},
-            {"$set": update_data}
-        )
+    await emp_collection.update_one({"emp_no": emp_no}, {"$set": update_data})
+    updated_employee = await emp_collection.find_one({"emp_no": emp_no})
+    updated_employee.pop("_id", None)
 
-        if result.modified_count == 0:
-            raise HTTPException(status_code=500, detail="Update failed")
+    return {
+        "message": f"Employee {emp_no} updated successfully",
+        "employee": updated_employee,
+        "updated_by": session.get("name", user_email),
+        "updated_fields": list(update_data.keys())
+    }
 
-        updated_employee = await emp_collection.find_one({"emp_no": emp_no})
-        updated_employee.pop('_id', None)
-
-        return {
-            "message": f"Employee {emp_no} updated successfully",
-            "employee": updated_employee
-        }
-
-    except Exception as e:
-        logger.error(f"Error updating employee: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
-
+# Delete employee
 @app.delete("/employees/{emp_no}")
-async def delete_employee(
-    request: Request,
-    emp_no: str,
-    user_data: dict = Depends(require_superadmin)
-):
-    """Delete an employee (superadmin only)"""
-    
+async def delete_employee(request: Request, emp_no: str):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired.")
+
+    user_email = session["email"]
+    user_role = session["role"]
+
+    if user_role != "superadmin":
+        await auto_notify(request, user_email, f"delete employee {emp_no}")
+        raise HTTPException(status_code=403, detail="Only superadmins can delete employees")
+
     emp_collection = db["employees"]
     existing_employee = await emp_collection.find_one({"emp_no": emp_no})
-    
     if not existing_employee:
         raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
 
     employee_name = existing_employee.get("name", "Unknown")
+    await emp_collection.delete_one({"emp_no": emp_no})
 
-    try:
-        result = await emp_collection.delete_one({"emp_no": emp_no})
+    return {
+        "message": f"Employee {employee_name} ({emp_no}) deleted successfully",
+        "deleted_by": session.get("name", user_email),
+        "deleted_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
+    }
 
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=500, detail="Delete failed")
 
-        return {
-            "message": f"Employee {employee_name} deleted successfully",
-            "deleted_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
-        }
-
-    except Exception as e:
-        logger.error(f"Error deleting employee: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
-
-# ==============================
-# HOLIDAYS ROUTES
-# ==============================
-
+# Load holidays
 @app.post("/holidays")
-async def upload_holidays(
-    file: UploadFile = File(...),
-    user_data: dict = Depends(require_admin)
-):
-    """
-    Upload holidays Excel file.
-    Accepts any sheet containing 'holiday' in its name (case-insensitive).
-    """
+async def upload_holidays(file: UploadFile = File(...)):
+    import tempfile
+
+    # Save the uploaded Excel file temporarily
+    suffix = os.path.splitext(file.filename)[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        temp_path = tmp.name
+
+    holidays = []
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[-1]) as tmp:
-            tmp.write(await file.read())
-            temp_path = tmp.name
+        # Read HOLIDAYS sheet using second row as header
+        df = pd.read_excel(temp_path, sheet_name="HOLIDAYS", header=1)
+        df_filtered = df.dropna(subset=['Name of the Occasion', 'Date'])
 
-        # Read excel, find any sheet with 'holiday' in name
-        xls = pd.ExcelFile(temp_path)
-        sheet_name = None
-        for s in xls.sheet_names:
-            if "holiday" in s.lower():
-                sheet_name = s
-                break
-        if not sheet_name:
-            raise HTTPException(status_code=400, detail="No sheet containing 'holiday' found")
-
-        df = pd.read_excel(xls, sheet_name=sheet_name)
-        if df.empty:
-            raise HTTPException(status_code=400, detail="Holiday sheet is empty")
-
-        # Normalize column names
-        df.columns = [str(c).strip().lower() for c in df.columns]
-
-        # Detect date and name columns
-        possible_date_cols = [c for c in df.columns if "date" in c]
-        possible_name_cols = [c for c in df.columns if ("name" in c) or ("occasion" in c)]
-
-        if not possible_date_cols or not possible_name_cols:
-            raise HTTPException(status_code=400, detail="Expected columns containing 'date' and 'name'")
-
-        date_col = possible_date_cols[0]
-        name_col = possible_name_cols[0]
-
-        df = df[[date_col, name_col]].dropna(subset=[date_col, name_col])
-        df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
-        df = df[df[date_col].notna()]
-
-        holidays = []
-        for _, r in df.iterrows():
-            dt = r[date_col].date()
-            name = sanitize_input(str(r[name_col]))
-            holidays.append({"date": dt.strftime("%Y-%m-%d"), "name": name})
+        for _, row in df_filtered.iterrows():
+            raw_date = str(row["Date"]).strip()
+            name = str(row["Name of the Occasion"]).strip()
+            date = pd.to_datetime(raw_date, dayfirst=True, errors="coerce")
+            if pd.notna(date):
+                holidays.append({
+                    # Storing in YYYY-MM-DD for database consistency and sorting
+                    "date": date.strftime("%Y-%m-%d"),
+                    "name": name
+                })
 
         if not holidays:
-            raise HTTPException(status_code=400, detail="No valid holidays found")
+            raise HTTPException(status_code=400, detail="No valid holidays found.")
 
         hol_collection = db["holidays"]
         await hol_collection.delete_many({})
         await hol_collection.insert_many(holidays)
 
-        try:
-            os.remove(temp_path)
-        except Exception:
-            pass
+        return {"message": f"{len(holidays)} holidays uploaded successfully."}
 
-        return {
-            "message": f"{len(holidays)} holidays uploaded successfully",
-            "uploaded_by": user_data.get("email"),
-            "sheet": sheet_name
-        }
-
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.exception(f"Error parsing holidays: {e}")
         raise HTTPException(status_code=500, detail=f"Error parsing holidays: {e}")
 
+    finally:
+        os.remove(temp_path)
+
+
+# Fetch holidays
 @app.get("/holidays")
 async def get_holidays():
-    """Get all holidays (public endpoint)"""
     holidays = []
     cursor = db["holidays"].find().sort("date", 1)
     async for doc in cursor:
@@ -936,45 +695,56 @@ async def get_holidays():
         })
     return {"holidays": holidays}
 
-# ==============================
-# SHIFT MANAGEMENT
-# ==============================
 
+# Shift management
 @app.post("/shift")
-async def assign_shift(
-    shift_data: ShiftAssign,
-    user_data: dict = Depends(require_superadmin)
-):
-    """Assign shift to employee (superadmin only)"""
-    
-    employee = await db["employees"].find_one({"emp_no": shift_data.emp_no})
+async def assign_shift(request: Request):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired or invalid")
+
+    user_email = session["email"]
+    user_role = session["role"]
+
+    body = await request.json()
+    emp_no = body.get("emp_no")
+    month = body.get("month")
+    shift = body.get("shift", {})
+
+    if not all([emp_no, month, shift]):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    if user_role != "superadmin":
+        await auto_notify(request, user_email, f"assign/modify shift for {emp_no}")
+        raise HTTPException(status_code=403, detail="Only superadmins can modify shifts")
+
+    employee = await db["employees"].find_one({"emp_no": emp_no})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
     name = employee.get("name", "")
-
     shift_doc = {
-        "emp_no": shift_data.emp_no,
+        "emp_no": emp_no,
         "name": name,
-        "month": shift_data.month,
-        "shift": shift_data.shift,
-        "updated_by": user_data.get("email"),
+        "month": month,
+        "shift": shift,
+        "updated_by": user_email,
         "updated_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
     }
 
     shift_collection = db["shifts"]
-    existing = await shift_collection.find_one({"emp_no": shift_data.emp_no, "month": shift_data.month})
+    existing = await shift_collection.find_one({"emp_no": emp_no, "month": month})
 
     if existing:
         await shift_collection.replace_one({"_id": existing["_id"]}, shift_doc)
     else:
         await shift_collection.insert_one(shift_doc)
 
-    return {"message": f"Shift updated for {name} ({shift_data.emp_no}) for {shift_data.month}"}
+    return {"message": f"Shift updated for {name} ({emp_no}) for {month}."}
 
-# ==============================
-# ATTENDANCE MANAGEMENT
-# ==============================
+
+# Attendance management
+attendance = APIRouter()
 
 REGULAR_ATTENDANCE_LEGEND = {
     "P": "Present",
@@ -1004,77 +774,76 @@ APPRENTICE_ATTENDANCE_LEGEND = {
     "CL": "Casual Leave",
     "REL": "Released"
 }
-
-@app.get("/attendance/legend")
-async def get_attendance_legend():
-    """Returns the legend of attendance codes"""
-    return {
-        "regular": REGULAR_ATTENDANCE_LEGEND,
-        "apprentice": APPRENTICE_ATTENDANCE_LEGEND,
-        "message": "Attendance code legends"
-    }
-
 @app.post("/attendance")
-async def mark_attendance(
-    attendance_data: AttendanceSubmit,
-    user_data: dict = Depends(verify_session_token)
-):
-    """Mark attendance for an employee"""
-    
-    updated_by = user_data.get("email")
-    role = user_data.get("role", "admin")
+async def mark_attendance(request: Request):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired or invalid")
 
+    user_email = session["email"]
+    user_name = session.get("name", user_email)
+    role = session.get("role", "admin")
+
+    body = await request.json()
+    emp_no = body.get("emp_no")
+    month = body.get("month")  # format: "YYYY-MM"
+    attendance_data = body.get("attendance", {})
+
+    if not all([emp_no, month, attendance_data]):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    # Validate month format
     try:
-        year, month_num = map(int, attendance_data.month.split("-"))
+        year, month_num = map(int, month.split("-"))
     except:
-        raise HTTPException(status_code=400, detail="Invalid month format")
+        raise HTTPException(status_code=400, detail="Month format should be YYYY-MM")
 
-    emp = await db["employees"].find_one({"emp_no": attendance_data.emp_no})
+    # Fetch employee info
+    emp = await db["employees"].find_one({"emp_no": emp_no})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
     emp_name = emp.get("name", "")
     emp_type = emp.get("type", "").lower()
-
     if emp_type not in ["regular", "apprentice"]:
         raise HTTPException(status_code=400, detail="Invalid employee type")
 
-    # Set attendance window and valid codes
+    # Attendance validation window
     if emp_type == "regular":
         start_date = datetime(year, month_num, 11)
         end_date = datetime(year + 1, 1, 10) if month_num == 12 else datetime(year, month_num + 1, 10)
         valid_codes = REGULAR_ATTENDANCE_LEGEND.keys()
-    elif emp_type == "apprentice":
+    else:
         start_date = datetime(year, month_num, 1)
         end_day = calendar.monthrange(year, month_num)[1]
         end_date = datetime(year, month_num, end_day)
         valid_codes = APPRENTICE_ATTENDANCE_LEGEND.keys()
 
-    # Validate each attendance record
-    for date_str, code in attendance_data.attendance.items():
+    # Validate attendance entries
+    for date_str, code in attendance_data.items():
         try:
             date_obj = datetime.strptime(date_str, "%d-%m-%Y")
             if not (start_date.date() <= date_obj.date() <= end_date.date()):
-                raise HTTPException(status_code=400, detail=f"Date {date_str} out of range")
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid date: {date_str}")
-
+                raise HTTPException(status_code=400, detail=f"Date {date_str} is out of allowed range.")
+        except:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {date_str}. Must be DD-MM-YYYY")
         if not any(code.startswith(valid) for valid in valid_codes):
-            raise HTTPException(status_code=400, detail=f"Invalid code '{code}' for {emp_type}")
+            raise HTTPException(status_code=400, detail=f"Invalid code '{code}' for type '{emp_type}'")
 
     attendance_collection = db["attendance"]
-    existing = await attendance_collection.find_one({"emp_no": attendance_data.emp_no, "month": attendance_data.month})
+    existing = await attendance_collection.find_one({"emp_no": emp_no, "month": month})
 
     if existing and role != "superadmin":
-        raise HTTPException(status_code=403, detail="Only superadmin can modify existing attendance")
+        await auto_notify(request, user_email, f"modify attendance for {emp_no}")
+        raise HTTPException(status_code=403, detail="Only superadmins can modify existing attendance")
 
     doc = {
-        "emp_no": attendance_data.emp_no,
+        "emp_no": emp_no,
         "emp_name": emp_name,
         "type": emp_type,
-        "month": attendance_data.month,
-        "records": attendance_data.attendance,
-        "updated_by": updated_by,
+        "month": month,
+        "records": attendance_data,
+        "updated_by": user_email,
         "updated_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
     }
 
@@ -1086,232 +855,48 @@ async def mark_attendance(
         action = "created"
 
     summary = {}
-    for status in attendance_data.attendance.values():
+    for status in attendance_data.values():
         key = status.split("/")[0] if "/" in status else status
         summary[key] = summary.get(key, 0) + 1
 
     return {
-        "message": f"Attendance {action} for {emp_name}",
+        "message": f"Attendance {action} for {emp_no} - {emp_name} for {month}.",
+        "by": user_name,
         "status": action,
-        "total_days": len(attendance_data.attendance),
+        "total_days": len(attendance_data),
         "summary": summary
     }
 
-# ==============================
-# BULK ATTENDANCE UPLOAD FROM EXCEL
-# ==============================
+# Index creation for faster queries
+@app.on_event("startup")
+async def setup_indexes():
+    """Create database indexes for faster queries"""
+    await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
+    await db["employees"].create_index("emp_no")
+    await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
+    print("Database indexes created")
 
-@app.post("/attendance/upload")
-async def upload_bulk_attendance(
-    file: UploadFile = File(...),
-    user_data: dict = Depends(require_admin)
-):
+
+# Attendance legend for frontend access
+@app.get("/attendance/legend")
+async def get_attendance_legend():
     """
-    Upload bulk attendance from Excel file.
-    
-    Expected Excel format:
-    - First column: Employee Number
-    - Subsequent columns: Dates (in DD-MM-YYYY format as headers)
-    - Cell values: Attendance codes (P, A, CL, etc.)
-    - Sheet name should contain month info or be specified
-    
-    Example:
-    | Employee No | 11-07-2025 | 12-07-2025 | 13-07-2025 |
-    |-------------|------------|------------|------------|
-    | 12345       | P          | P          | A          |
-    | 12346       | P          | CL         | P          |
+    Returns the legend of attendance codes for regular and apprentice employees
     """
-    
-    # Check file size
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+    return {
+        "regular": REGULAR_ATTENDANCE_LEGEND,
+        "apprentice": APPRENTICE_ATTENDANCE_LEGEND,
+        "message": "Attendance code legends for reference"
+    }
 
-    suffix = os.path.splitext(file.filename)[-1]
-    if suffix not in ['.xlsx', '.xls']:
-        raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are supported")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(contents)
-        temp_path = tmp.name
-
-    try:
-        # Read the Excel file
-        xls = pd.ExcelFile(temp_path)
-        
-        # Use first sheet or find attendance sheet
-        sheet_name = xls.sheet_names[0]
-        for s in xls.sheet_names:
-            if "attendance" in s.lower():
-                sheet_name = s
-                break
-        
-        df = pd.read_excel(xls, sheet_name=sheet_name)
-        
-        if df.empty:
-            raise HTTPException(status_code=400, detail="Excel sheet is empty")
-
-        # Normalize column names
-        df.columns = [str(col).strip() for col in df.columns]
-        
-        # Identify employee number column
-        emp_col = None
-        for col in df.columns:
-            if any(keyword in col.lower() for keyword in ['emp', 'employee', 'no', 'number']):
-                emp_col = col
-                break
-        
-        if not emp_col:
-            raise HTTPException(status_code=400, detail="Could not find employee number column")
-
-        # Get date columns (all columns except employee column)
-        date_columns = [col for col in df.columns if col != emp_col]
-        
-        if not date_columns:
-            raise HTTPException(status_code=400, detail="No date columns found")
-
-        # Parse dates and determine month
-        parsed_dates = {}
-        months_found = set()
-        
-        for col in date_columns:
-            try:
-                # Try parsing the column name as a date
-                date_obj = pd.to_datetime(col, dayfirst=True, errors='coerce')
-                if pd.notna(date_obj):
-                    date_str = date_obj.strftime("%d-%m-%Y")
-                    parsed_dates[col] = date_str
-                    month_key = date_obj.strftime("%Y-%m")
-                    months_found.add(month_key)
-            except:
-                logger.warning(f"Could not parse column as date: {col}")
-                continue
-        
-        if not parsed_dates:
-            raise HTTPException(status_code=400, detail="Could not parse any date columns")
-        
-        if len(months_found) > 1:
-            raise HTTPException(status_code=400, detail=f"Multiple months found in data: {months_found}. Please upload one month at a time.")
-        
-        month = list(months_found)[0]
-        
-        # Process each employee row
-        processed_count = 0
-        error_count = 0
-        errors = []
-        
-        emp_collection = db["employees"]
-        attendance_collection = db["attendance"]
-        
-        for idx, row in df.iterrows():
-            try:
-                emp_no = clean_emp_no(row[emp_col])
-                
-                if not emp_no or pd.isna(emp_no):
-                    continue
-                
-                # Get employee details
-                emp = await emp_collection.find_one({"emp_no": emp_no})
-                if not emp:
-                    errors.append(f"Row {idx+2}: Employee {emp_no} not found in database")
-                    error_count += 1
-                    continue
-                
-                emp_name = emp.get("name", "")
-                emp_type = emp.get("type", "").lower()
-                
-                # Build attendance records
-                attendance_records = {}
-                for original_col, date_str in parsed_dates.items():
-                    attendance_code = str(row[original_col]).strip().upper()
-                    
-                    # Skip empty cells
-                    if pd.isna(row[original_col]) or attendance_code in ['', 'NAN', 'NONE']:
-                        continue
-                    
-                    # Validate attendance code
-                    valid_codes = REGULAR_ATTENDANCE_LEGEND.keys() if emp_type == "regular" else APPRENTICE_ATTENDANCE_LEGEND.keys()
-                    
-                    if not any(attendance_code.startswith(valid) for valid in valid_codes):
-                        errors.append(f"Row {idx+2}, Employee {emp_no}: Invalid code '{attendance_code}' for {emp_type}")
-                        continue
-                    
-                    attendance_records[date_str] = attendance_code
-                
-                if not attendance_records:
-                    errors.append(f"Row {idx+2}: No valid attendance data for employee {emp_no}")
-                    error_count += 1
-                    continue
-                
-                # Check if attendance already exists
-                existing = await attendance_collection.find_one({"emp_no": emp_no, "month": month})
-                
-                if existing and user_data.get("role") != "superadmin":
-                    errors.append(f"Row {idx+2}: Attendance for {emp_no} already exists. Only superadmin can modify.")
-                    error_count += 1
-                    continue
-                
-                # Save attendance
-                doc = {
-                    "emp_no": emp_no,
-                    "emp_name": emp_name,
-                    "type": emp_type,
-                    "month": month,
-                    "records": attendance_records,
-                    "updated_by": user_data.get("email"),
-                    "updated_at": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S")
-                }
-                
-                if existing:
-                    await attendance_collection.replace_one({"_id": existing["_id"]}, doc)
-                else:
-                    await attendance_collection.insert_one(doc)
-                
-                processed_count += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing row {idx+2}: {e}")
-                errors.append(f"Row {idx+2}: {str(e)}")
-                error_count += 1
-                continue
-        
-        # Clean up temp file
-        try:
-            os.remove(temp_path)
-        except Exception as e:
-            logger.error(f"Temp file cleanup failed: {e}")
-        
-        return {
-            "message": "Bulk attendance upload completed",
-            "summary": {
-                "total_rows": len(df),
-                "processed": processed_count,
-                "errors": error_count,
-                "month": month
-            },
-            "errors": errors[:50] if errors else [],
-            "uploaded_by": user_data.get("email")
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing bulk attendance: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
-    finally:
-        try:
-            os.remove(temp_path)
-        except:
-            pass
-
+# Retrieve attendance data
 @app.get("/attendance")
-async def get_attendance(
-    emp_no: str = None,
-    month: str = None,
-    user_data: dict = Depends(verify_session_token)
-):
-    """Get attendance records with optional filters"""
-    
+async def get_attendance(request: Request, emp_no: str = None, month: str = None):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
+
     filter_query = {}
 
     if emp_no:
@@ -1326,55 +911,45 @@ async def get_attendance(
             if not (1 <= month_num <= 12):
                 raise ValueError()
         except:
-            raise HTTPException(status_code=400, detail="Month format: YYYY-MM")
+            raise HTTPException(status_code=400, detail="Month should be in YYYY-MM format")
         filter_query["month"] = month
 
-    attendance_records = []
     cursor = db["attendance"].find(filter_query).sort("month", -1)
+    attendance_records = []
 
     async for record in cursor:
-        record.pop('_id', None)
-
+        record.pop("_id", None)
         summary = {}
         for attendance_code in record.get("records", {}).values():
             code = attendance_code.split("/")[0] if "/" in attendance_code else attendance_code
             summary[code] = summary.get(code, 0) + 1
-
         record["summary"] = summary
         record["total_days"] = len(record.get("records", {}))
-
         attendance_records.append(record)
 
-    if not attendance_records:
-        return {
-            "message": "No attendance records found",
-            "data": [],
-            "count": 0
-        }
-
     return {
-        "message": "Attendance records retrieved",
+        "message": "Attendance records retrieved successfully" if attendance_records else "No attendance records found",
         "data": attendance_records,
         "count": len(attendance_records)
     }
 
+
+# Simple endpoint to get attendance summary for one month
 @app.get("/attendance/monthly")
-async def get_monthly_summary(
-    month: str,
-    user_data: dict = Depends(verify_session_token)
-):
-    """Get monthly attendance summary"""
-    
+async def get_monthly_summary(request: Request, month: str):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+
     try:
         year, month_num = map(int, month.split("-"))
         if not (1 <= month_num <= 12):
             raise ValueError()
     except:
-        raise HTTPException(status_code=400, detail="Month format: YYYY-MM")
+        raise HTTPException(status_code=400, detail="Month should be in YYYY-MM format")
 
-    records = []
     cursor = db["attendance"].find({"month": month}).sort("emp_no", 1)
-
+    records = []
     async for record in cursor:
         summary = {}
         for code in record.get("records", {}).values():
@@ -1389,14 +964,6 @@ async def get_monthly_summary(
             "breakdown": summary
         })
 
-    if not records:
-        return {
-            "message": f"No data for {month}",
-            "month": month,
-            "employees": [],
-            "total_employees": 0
-        }
-
     return {
         "message": f"Monthly summary for {month}",
         "month": month,
@@ -1404,33 +971,30 @@ async def get_monthly_summary(
         "total_employees": len(records)
     }
 
-@app.get("/attendance/employee/{emp_no}")
-async def get_employee_history(
-    emp_no: str,
-    user_data: dict = Depends(verify_session_token)
-):
-    """Get attendance history for a specific employee"""
-    
+
+# Simple endpoint to get one employee's history@app.get("/attendance/employee/{emp_no}")
+async def get_employee_history(request: Request, emp_no: str):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired")
+
     employee = await db["employees"].find_one({"emp_no": emp_no})
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee {emp_no} not found")
 
-    history = []
     cursor = db["attendance"].find({"emp_no": emp_no}).sort("month", -1)
-
+    history = []
     async for record in cursor:
-        record.pop('_id', None)
-
+        record.pop("_id", None)
         summary = {}
         for code in record.get("records", {}).values():
             clean_code = code.split("/")[0] if "/" in code else code
             summary[clean_code] = summary.get(clean_code, 0) + 1
-
         record["summary"] = summary
         history.append(record)
 
     return {
-        "message": f"History for {employee['name']}",
+        "message": f"Attendance history for {employee['name']} ({emp_no})",
         "employee": {
             "emp_no": emp_no,
             "name": employee["name"],
@@ -1441,44 +1005,30 @@ async def get_employee_history(
         "total_months": len(history)
     }
 
-# ==============================
-# EXPORT ROUTES
-# ==============================
 
-@app.get("/export_regular")
-async def export_regular(
-    month: str = "2025-07",
-    user_data: dict = Depends(verify_session_token)
-):
-    """Export regular employee attendance to Excel"""
+# Export attendance records@app.get("/export_regular")
+async def export_regular(request: Request, month: str = "2025-07"):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
+
     stream = await create_attendance_excel(db, "regular", month)
     return StreamingResponse(
-        stream, 
+        stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=regular_attendance_{month}.xlsx"}
     )
 
+
 @app.get("/export_apprentice")
-async def export_apprentice(
-    month: str = "2025-07",
-    user_data: dict = Depends(verify_session_token)
-):
-    """Export apprentice attendance to Excel"""
+async def export_apprentice(request: Request, month: str = "2025-07"):
+    session = await get_session(request)
+    if not session:
+        raise HTTPException(status_code=403, detail="Session expired. Please login again.")
+
     stream = await create_attendance_excel(db, "apprentice", month)
     return StreamingResponse(
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=apprentice_attendance_{month}.xlsx"}
     )
-
-# ==============================
-# STARTUP EVENTS
-# ==============================
-
-@app.on_event("startup")
-async def setup_indexes():
-    """Create database indexes for faster queries"""
-    await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
-    await db["employees"].create_index("emp_no")
-    await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
-    logger.info("Database indexes created")

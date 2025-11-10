@@ -1,101 +1,97 @@
-import os
-import httpx
+from datetime import datetime, timedelta
+from fastapi import Request, Response
+import pytz
+import secrets
 import json
-from dotenv import load_dotenv
 
-load_dotenv()
+# Timezone for Kolkata
+kolkata_tz = pytz.timezone("Asia/Kolkata")
 
-UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
-UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+# In-memory session store
+_sessions = {}     # { session_id: { "data": {...}, "expiry": datetime } }
 
-headers = {
-    "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}",
-    "Content-Type": "application/json"
-}
+# Session duration: 7 days
+SESSION_DURATION = timedelta(days=7)
 
-async def redis_set(key: str, value: str, expiry: int = 3600):
+
+# ============================
+# Session Management
+# ============================
+async def create_session(response: Response, user_data: dict):
     """
-    Set a key-value pair in Redis with expiry.
-    The value should already be a JSON string when passed to this function.
+    Create a new session and store it in memory with a cookie.
     """
-    try:
-        # For Upstash Redis REST API, the command format should be:
-        # ["SET", key, value, "EX", expiry_seconds]
-        payload = ["SET", key, value, "EX", str(expiry)]
-        
-        print(f"DEBUG: Redis SET payload being sent: {json.dumps(payload)}")
+    session_id = secrets.token_hex(32)
+    expiry = datetime.now(kolkata_tz) + SESSION_DURATION
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                UPSTASH_REDIS_REST_URL, 
-                json=payload,  # Send the array directly, not wrapped in {"command": ...}
-                headers=headers
-            )
-            response.raise_for_status()
-            result = response.json()
-            print(f"DEBUG: Redis SET response: {result}")
-            return result
-    except httpx.HTTPStatusError as e:
-        print(f"ERROR: HTTPStatusError during Redis SET: {e}")
-        print(f"ERROR: Response status: {e.response.status_code}")
-        print(f"ERROR: Response text: {e.response.text}")
-        raise
-    except Exception as e:
-        print(f"ERROR: Unexpected error during Redis SET: {e}")
-        raise
+    _sessions[session_id] = {"data": user_data, "expiry": expiry}
 
-async def redis_get(key: str):
-    """
-    Get a value from Redis by key.
-    """
-    try:
-        payload = ["GET", key]
-        
-        print(f"DEBUG: Redis GET payload being sent: {json.dumps(payload)}")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                UPSTASH_REDIS_REST_URL, 
-                json=payload, 
-                headers=headers
-            )
-            response.raise_for_status()
-            result = response.json()
-            print(f"DEBUG: Redis GET response: {result}")
-            return result  # Return the actual result, not wrapped in .get("result")
-    except httpx.HTTPStatusError as e:
-        print(f"ERROR: HTTPStatusError during Redis GET: {e}")
-        print(f"ERROR: Response status: {e.response.status_code}")
-        print(f"ERROR: Response text: {e.response.text}")
-        raise
-    except Exception as e:
-        print(f"ERROR: Unexpected error during Redis GET: {e}")
-        raise
+    response.set_cookie(
+        key="session_id",
+        value=session_id,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=int(SESSION_DURATION.total_seconds()),
+    )
 
-async def redis_delete(key: str):
+    print(f"[SESSION] Created for {user_data.get('email')} -> {session_id}")
+    return session_id
+
+
+async def get_session(request: Request, response: Response = None):
     """
-    Delete a key from Redis.
+    Retrieve and refresh the session.
+    Returns None if the session has expired or is invalid.
     """
-    try:
-        payload = ["DEL", key]
-        
-        print(f"DEBUG: Redis DEL payload being sent: {json.dumps(payload)}")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                UPSTASH_REDIS_REST_URL, 
-                json=payload, 
-                headers=headers
-            )
-            response.raise_for_status()
-            result = response.json()
-            print(f"DEBUG: Redis DEL response: {result}")
-            return result
-    except httpx.HTTPStatusError as e:
-        print(f"ERROR: HTTPStatusError during Redis DEL: {e}")
-        print(f"ERROR: Response status: {e.response.status_code}")
-        print(f"ERROR: Response text: {e.response.text}")
-        raise
-    except Exception as e:
-        print(f"ERROR: Unexpected error during Redis DEL: {e}")
-        raise
+    session_id = request.cookies.get("session_id")
+    if not session_id or session_id not in _sessions:
+        return None
+
+    session = _sessions[session_id]
+    now = datetime.now(kolkata_tz)
+
+    # Check expiration
+    if session["expiry"] < now:
+        print(f"[SESSION] Expired -> {session_id}")
+        del _sessions[session_id]
+        return None
+
+    # Auto-refresh expiry
+    session["expiry"] = now + SESSION_DURATION
+    if response:
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=int(SESSION_DURATION.total_seconds()),
+        )
+
+    return session["data"]
+
+
+async def delete_session(request: Request, response: Response):
+    """
+    Clear the user's session and delete cookie.
+    """
+    session_id = request.cookies.get("session_id")
+    if session_id and session_id in _sessions:
+        del _sessions[session_id]
+        print(f"[SESSION] Deleted -> {session_id}")
+
+    response.delete_cookie("session_id")
+    return True
+
+
+async def cleanup_expired_sessions():
+    """
+    Optional background task to clean old sessions.
+    """
+    now = datetime.now(kolkata_tz)
+    expired = [sid for sid, s in _sessions.items() if s["expiry"] < now]
+    for sid in expired:
+        del _sessions[sid]
+    if expired:
+        print(f"[SESSION] Cleaned up {len(expired)} expired sessions.")
