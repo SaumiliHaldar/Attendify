@@ -8,6 +8,7 @@ import { Calendar } from "../ui/calendar";
 import { CalendarDays, Users, CalendarCheck, Calendar1 } from "lucide-react";
 import { LoaderFive } from "../ui/loader";
 
+// helper to parse dd-mm-yyyy into Date object
 function parseDate(str) {
   if (!str) return null;
   const [day, month, year] = str.split("-").map(Number);
@@ -19,54 +20,46 @@ export default function Hero() {
   const [holidayDates, setHolidayDates] = useState([]);
   const [sundays, setSundays] = useState([]);
   const [today, setToday] = useState(new Date());
-  const [error, setError] = useState(null);
-
-  // Use environment variable for flexibility
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const res = await fetch(`${API_URL}/`, {
-          method: "GET",
-          credentials: "include", // important for cookies/sessions
-        });
+    fetch("https://attendify-tv8w.onrender.com", {
+      method: "GET",
+      credentials: "include",
+    })
+      .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-
+        return res.json();
+      })
+      .then((json) => {
         setData(json);
 
         // Parse holidays
-        if (json.holidays) {
-          setHolidayDates(json.holidays.map((h) => parseDate(h.date)));
+        if (json.holidays && Array.isArray(json.holidays)) {
+          const parsedHolidays = json.holidays
+            .map((h) => parseDate(h.date))
+            .filter(Boolean);
+          setHolidayDates(parsedHolidays);
         }
 
         // Parse Sundays
-        if (json.sundays) {
-          setSundays(json.sundays.map((d) => parseDate(d)));
+        if (json.sundays && Array.isArray(json.sundays)) {
+          const parsedSundays = json.sundays
+            .map((d) => parseDate(d))
+            .filter(Boolean);
+          setSundays(parsedSundays);
         }
 
-        // Parse today (format "dd-mm-yyyy HH:MM:SS TZ")
+        // Parse today - handles "dd-mm-yyyy HH:MM:SS TZ" format
         if (json.today) {
-          const todayStr = json.today.split(" ")[0];
-          setToday(parseDate(todayStr));
+          const todayStr = json.today.split(" ")[0]; // Get just the date part
+          const parsedToday = parseDate(todayStr);
+          if (parsedToday) setToday(parsedToday);
         }
-      } catch (err) {
-        console.error("Error fetching dashboard data:", err);
-        setError("Failed to load data from server.");
-      }
-    };
-
-    fetchData();
-  }, [API_URL]);
-
-  if (error) {
-    return (
-      <div className="h-full flex items-center justify-center text-red-500 font-semibold">
-        {error}
-      </div>
-    );
-  }
+      })
+      .catch((error) => {
+        console.error("Error fetching data:", error);
+      });
+  }, []);
 
   return (
     <AuroraBackground className="h-full flex items-center justify-center">
@@ -85,9 +78,8 @@ export default function Hero() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-6xl">
-          {/* Left side */}
+          {/* Left column */}
           <div className="flex flex-col gap-6 h-full">
-            {/* Holidays */}
             <Card>
               <CardHeader className="flex items-center gap-2">
                 <CalendarDays className="w-6 h-6 text-blue-500" />
@@ -95,16 +87,19 @@ export default function Hero() {
               </CardHeader>
               <CardContent>
                 {data ? (
-                  data.holidays?.length > 0 ? (
+                  data.holidays && data.holidays.length > 0 ? (
                     <ul className="space-y-1">
                       {data.holidays.map((h, i) => (
                         <li key={i}>
-                          <span className="font-semibold">{h.date}</span> — {h.name}
+                          <span className="font-semibold">{h.date}</span> —{" "}
+                          {h.name}
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-muted-foreground">No holidays this month.</p>
+                    <p className="text-muted-foreground">
+                      No holidays this month.
+                    </p>
                   )
                 ) : (
                   <LoaderFive text="Loading Data..." />
@@ -112,7 +107,6 @@ export default function Hero() {
               </CardContent>
             </Card>
 
-            {/* Yesterday's Attendance */}
             <Card className="flex-1">
               <CardHeader className="flex items-center gap-2">
                 <Users className="w-6 h-6 text-green-500" />
@@ -120,39 +114,44 @@ export default function Hero() {
               </CardHeader>
               <CardContent>
                 {data ? (
-                  <>
-                    <p>
-                      <strong>Date:</strong>{" "}
-                      {data.attendance_snapshot?.yesterday?.date || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Present:</strong>{" "}
-                      {data.attendance_snapshot?.yesterday?.present_count || 0}
-                    </p>
-                    <p>
-                      <strong>Total Marked:</strong>{" "}
-                      {data.attendance_snapshot?.yesterday?.total_marked || 0}
-                    </p>
-                    {data.attendance_snapshot?.yesterday?.breakdown && (
-                      <div className="mt-2 text-sm text-muted-foreground">
-                        <strong>Breakdown:</strong>
-                        {Object.entries(
-                          data.attendance_snapshot.yesterday.breakdown
-                        ).map(([code, count]) => (
-                          <span key={code} className="ml-2">
-                            {code}: {count}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </>
+                  data.attendance_snapshot?.yesterday ? (
+                    <>
+                      <p>
+                        <strong>Date:</strong>{" "}
+                        {data.attendance_snapshot.yesterday.date || "N/A"}
+                      </p>
+                      <p>
+                        <strong>Present:</strong>{" "}
+                        {data.attendance_snapshot.yesterday.present_count || 0}
+                      </p>
+                      <p>
+                        <strong>Total Marked:</strong>{" "}
+                        {data.attendance_snapshot.yesterday.total_marked || 0}
+                      </p>
+                      {data.attendance_snapshot.yesterday.breakdown &&
+                        Object.keys(data.attendance_snapshot.yesterday.breakdown)
+                          .length > 0 && (
+                          <div className="mt-2 text-sm text-muted-foreground">
+                            <strong>Breakdown:</strong>
+                            {Object.entries(
+                              data.attendance_snapshot.yesterday.breakdown
+                            ).map(([code, count]) => (
+                              <span key={code} className="ml-2">
+                                {code}: {count}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground">No data available</p>
+                  )
                 ) : (
                   <LoaderFive text="Loading Data..." />
                 )}
               </CardContent>
             </Card>
 
-            {/* Weekly Average */}
             <Card className="flex-1">
               <CardHeader className="flex items-center gap-2">
                 <CalendarCheck className="w-6 h-6 text-purple-500" />
@@ -160,37 +159,40 @@ export default function Hero() {
               </CardHeader>
               <CardContent>
                 {data ? (
-                  <>
-                    <p>
-                      <strong>Avg Present:</strong>{" "}
-                      {data.attendance_snapshot?.weekly_avg?.avg_present || 0}
-                    </p>
-                    <p>
-                      <strong>Avg Marked:</strong>{" "}
-                      {data.attendance_snapshot?.weekly_avg?.avg_total_marked || 0}
-                    </p>
-                    <p>
-                      <strong>Days Counted:</strong>{" "}
-                      {data.attendance_snapshot?.weekly_avg?.days_counted || 0}
-                    </p>
-
-                    {data.attendance_snapshot?.weekly_avg?.breakdown &&
-                      Object.keys(data.attendance_snapshot.weekly_avg.breakdown).length >
-                      0 && (
-                        <div className="mt-2 text-sm text-muted-foreground">
-                          <strong>Breakdown:</strong>
-                          <div className="grid grid-cols-2 gap-1 mt-1">
-                            {Object.entries(
-                              data.attendance_snapshot.weekly_avg.breakdown
-                            ).map(([code, count]) => (
-                              <span key={code}>
-                                {code}: {count}
-                              </span>
-                            ))}
+                  data.attendance_snapshot?.weekly_avg ? (
+                    <>
+                      <p>
+                        <strong>Avg Present:</strong>{" "}
+                        {data.attendance_snapshot.weekly_avg.avg_present || 0}
+                      </p>
+                      <p>
+                        <strong>Avg Marked:</strong>{" "}
+                        {data.attendance_snapshot.weekly_avg.avg_total_marked || 0}
+                      </p>
+                      <p>
+                        <strong>Days Counted:</strong>{" "}
+                        {data.attendance_snapshot.weekly_avg.days_counted || 0}
+                      </p>
+                      {data.attendance_snapshot.weekly_avg.breakdown &&
+                        Object.keys(data.attendance_snapshot.weekly_avg.breakdown)
+                          .length > 0 && (
+                          <div className="mt-2 text-sm text-muted-foreground">
+                            <strong>Breakdown:</strong>
+                            <div className="grid grid-cols-2 gap-1 mt-1">
+                              {Object.entries(
+                                data.attendance_snapshot.weekly_avg.breakdown
+                              ).map(([code, count]) => (
+                                <span key={code}>
+                                  {code}: {count}
+                                </span>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      )}
-                  </>
+                        )}
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground">No data available</p>
+                  )
                 ) : (
                   <LoaderFive text="Loading Data..." />
                 )}
@@ -198,7 +200,7 @@ export default function Hero() {
             </Card>
           </div>
 
-          {/* Right side (Calendar) */}
+          {/* Right column with calendar */}
           <Card className="h-full flex flex-col justify-center items-center">
             <CardHeader className="w-full">
               <CardTitle className="flex items-center gap-2 justify-start md:justify-center">
@@ -250,4 +252,3 @@ export default function Hero() {
     </AuroraBackground>
   );
 }
-
