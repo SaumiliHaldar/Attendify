@@ -37,6 +37,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 client = AsyncIOMotorClient(MONGO_URI, tls=True)
 db = client["Attendify"]
 collection = db["users"]
+sessions_collection = db["sessions"]
 
 # Google Auth
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -81,17 +82,63 @@ EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 
 async def verify_session(request: Request, response: Response = None) -> dict:
     """
-    Centralized session verification using sessions.py
-    - checks session cookie via get_session()
+    Centralized session verification using MongoDB
+    - checks session cookie and validates against MongoDB
     - returns user data if valid
     - raises HTTPException if invalid/expired
     """
-    user_data = await get_session(request, response)
+    session_id = request.cookies.get("session_id")
     
-    if not user_data:
+    if not session_id:
+        logger.warning("[SESSION] No session_id cookie found")
         raise HTTPException(status_code=403, detail="Session expired or invalid")
     
-    return user_data
+    # Check MongoDB for session
+    session_doc = await sessions_collection.find_one({"session_id": session_id})
+    
+    if not session_doc:
+        logger.warning(f"[SESSION] Session not found in MongoDB -> {session_id}")
+        raise HTTPException(status_code=403, detail="Session expired or invalid")
+    
+    now = datetime.now(kolkata_tz)
+    expiry = session_doc.get("expiry")
+    
+    # Convert to timezone-aware if needed
+    if expiry.tzinfo is None:
+        expiry = kolkata_tz.localize(expiry)
+    
+    # Check expiration
+    if expiry < now:
+        logger.info(f"[SESSION] Expired session -> {session_id}")
+        await sessions_collection.delete_one({"session_id": session_id})
+        raise HTTPException(status_code=403, detail="Session expired or invalid")
+    
+    # Auto-refresh expiry
+    new_expiry = now + timedelta(days=7)
+    
+    await sessions_collection.update_one(
+        {"session_id": session_id},
+        {
+            "$set": {
+                "expiry": new_expiry,
+                "last_accessed": now
+            }
+        }
+    )
+    
+    # Refresh cookie if response object is provided
+    if response:
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=7 * 24 * 3600,
+        )
+    
+    logger.info(f"[SESSION] Valid session for {session_doc['data'].get('email')}")
+    return session_doc["data"]
 
 def escape_regex(text: str) -> str:
     """Escape regex special characters"""
@@ -437,10 +484,33 @@ async def google_callback(request: Request, response: Response):
     except Exception as e:
         logger.error(f"MongoDB error: {e}")
 
-    # Create session using sessions.py
+    # Create session using sessions.py and store in MongoDB
     try:
-        session_id = await create_session(response, user_data)
-        logger.info(f"Session created for user: {user_info['email']}")
+        session_id = secrets.token_hex(32)
+        expiry = datetime.now(kolkata_tz) + timedelta(days=7)
+        
+        # Store in MongoDB
+        session_doc = {
+            "session_id": session_id,
+            "data": user_data,
+            "expiry": expiry,
+            "created_at": datetime.now(kolkata_tz),
+            "last_accessed": datetime.now(kolkata_tz)
+        }
+        
+        await sessions_collection.insert_one(session_doc)
+        logger.info(f"[SESSION] Created in MongoDB for {user_info['email']} -> {session_id}")
+        
+        # Set cookie
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=7 * 24 * 3600,
+        )
+        
     except Exception as e:
         logger.error(f"Session creation error: {e}")
         raise HTTPException(status_code=500, detail="Session creation failed")
@@ -462,7 +532,17 @@ async def google_callback(request: Request, response: Response):
 @app.post("/logout")
 async def logout(request: Request, response: Response):
     try:
-        await delete_session(request, response)
+        session_id = request.cookies.get("session_id")
+        
+        if session_id:
+            # Delete from MongoDB
+            result = await sessions_collection.delete_one({"session_id": session_id})
+            if result.deleted_count > 0:
+                logger.info(f"[SESSION] Deleted from MongoDB -> {session_id}")
+        
+        # Delete cookie
+        response.delete_cookie("session_id")
+        
         return JSONResponse(content={"message": "Logged out successfully"})
     except Exception as e:
         logger.error(f"Logout error: {e}")
@@ -1022,6 +1102,15 @@ async def setup_indexes():
     await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
     await db["employees"].create_index("emp_no")
     await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
+
+    # Session indexes
+    # TTL index - auto-delete expired sessions
+    await sessions_collection.create_index("expiry", expireAfterSeconds=0)
+    # Unique index on session_id
+    await sessions_collection.create_index("session_id", unique=True)
+    # Index on email for quick user session lookups
+    await sessions_collection.create_index("data.email")
+
     logger.info("Database indexes created")
 
 # Attendance legend
