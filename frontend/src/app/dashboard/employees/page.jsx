@@ -69,9 +69,6 @@ export default function Employees() {
     }
   }, []);
 
-  // Removed token variable as we rely on session cookie.
-  // We check if 'user' exists to signify we are logged in.
-
   // Fetch Employees
   const fetchEmployees = async () => {
     // Check for user existence instead of token
@@ -97,7 +94,6 @@ export default function Employees() {
 
       const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
         credentials: "include", 
-        // Headers are now optional unless we need to set others (like Content-Type for POST)
       });
       
       const data = await res.json();
@@ -128,7 +124,7 @@ export default function Employees() {
     if (user) { 
       fetchEmployees();
     }
-  }, [page, empType, user, API_URL]); // Added API_URL to dependency array for completeness
+  }, [page, empType, user, API_URL]);
 
   // Add Employee
   const handleAddEmployee = async () => {
@@ -143,7 +139,6 @@ export default function Employees() {
         credentials: "include", // Ensure cookie is sent
         headers: {
           "Content-Type": "application/json",
-          // Authorization header is removed
         },
         body: JSON.stringify(form),
       });
@@ -218,18 +213,20 @@ export default function Employees() {
         API_URL={API_URL}
       />
 
-      <div className="flex-1 w-full">
+      {/* Main Content Area - Fixed height structure for table scrolling */}
+      <div className="flex-1 w-full flex flex-col overflow-y-auto">
         <AuroraBackground>
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
-            className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 flex flex-col w-full"
+            // Height Fix: Ensure container takes minimum full height and allows its own scrolling
+            className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 flex flex-col w-full min-h-screen"
           >
             <Toaster position="top-right" richColors closeButton />
 
             <motion.h2
-              className="text-2xl sm:text-3xl font-semibold mb-6"
+              className="text-2xl sm:text-3xl font-semibold mb-6 flex-shrink-0"
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
@@ -237,8 +234,8 @@ export default function Employees() {
               Employee Management
             </motion.h2>
 
-            {/* Header */}
-            <Card className="w-full shadow-lg bg-white border border-gray-200 mb-6">
+            {/* Header Card (Fixed Height) */}
+            <Card className="w-full shadow-lg bg-white border border-gray-200 mb-6 flex-shrink-0">
               <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Users className="w-6 h-6 text-green-600" />
@@ -333,9 +330,9 @@ export default function Employees() {
               </CardHeader>
             </Card>
 
-            {/* Table */}
+            {/* Table Card - MUST be flex-1 to take up remaining vertical space */}
             <Card className="flex-1 flex flex-col overflow-hidden w-full">
-              <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+              <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 flex-shrink-0">
                 <div className="flex flex-wrap gap-2 w-full">
                   <Input
                     placeholder="Search by name, number, or designation..."
@@ -344,7 +341,7 @@ export default function Employees() {
                     onChange={(e) => setSearch(e.target.value)}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') {
-                        handleSearch(); // Call the fixed handler
+                        handleSearch();
                       }
                     }}
                   />
@@ -362,7 +359,7 @@ export default function Employees() {
                     </SelectContent>
                   </Select>
                   <Button 
-                    onClick={handleSearch} // Call the fixed handler
+                    onClick={handleSearch}
                     variant="outline"
                   >
                     Search
@@ -370,13 +367,14 @@ export default function Employees() {
                 </div>
               </CardHeader>
 
-              <CardContent className="flex-1 overflow-auto p-0">
+              {/* Table Content - MUST use overflow-y-auto to allow scrolling within the card */}
+              <CardContent className="flex-1 overflow-y-auto p-0">
                 {loading ? (
-                  <div className="flex justify-center items-center h-64">
+                  <div className="flex justify-center items-center h-full min-h-[10rem]">
                     <Loader2 className="animate-spin h-8 w-8 text-gray-500" />
                   </div>
                 ) : employees.length === 0 ? (
-                  <div className="flex justify-center items-center h-64 text-gray-500">
+                  <div className="flex justify-center items-center h-full min-h-[10rem] text-gray-500">
                     No employees found.
                   </div>
                 ) : (
@@ -422,8 +420,8 @@ export default function Employees() {
                 )}
               </CardContent>
 
-              {/* Pagination */}
-              <div className="flex flex-col sm:flex-row justify-between items-center gap-2 p-4 border-t bg-gray-50">
+              {/* Pagination (Fixed Height) */}
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-2 p-4 border-t bg-gray-50 flex-shrink-0">
                 <div className="text-sm text-gray-600">
                   Showing {page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total}
                 </div>
