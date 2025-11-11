@@ -106,10 +106,38 @@ export default function Dashboard({ children }) {
     weeklyAvgPresent: 0,
   });
 
+  // Helper function to get Authorization headers
+  const getAuthHeaders = () => {
+    // Rely on the browser automatically sending the 'session_id' cookie.
+    return {}; 
+  };
+  
+  // Custom fetch wrapper to handle authentication logic
+  const fetchWithAuth = (url, options = {}) => {
+      const headers = { ...getAuthHeaders(), ...options.headers };
+      return fetch(url, { ...options, headers });
+  };
+
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("user");
-      if (saved) setUser(JSON.parse(saved));
+      // Use the query parameters from the Google OAuth callback (if available) to populate the user
+      const urlParams = new URLSearchParams(window.location.search);
+      const email = urlParams.get('email');
+      const name = urlParams.get('name');
+      const role = urlParams.get('role');
+
+      if (email && name && role) {
+          const newUser = { email, name, role, picture: urlParams.get('picture') };
+          setUser(newUser);
+          localStorage.setItem("user", JSON.stringify(newUser));
+          
+          // Clear URL parameters after successful login to prevent re-parsing on refresh
+          window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (saved) {
+        setUser(JSON.parse(saved));
+      }
     }
   }, []);
 
@@ -140,13 +168,8 @@ export default function Dashboard({ children }) {
   useEffect(() => {
     if (!notifOpen || !user?.role) return;
     
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    
-    fetch(`${API_URL}/notifications`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+    // Using fetchWithAuth
+    fetchWithAuth(`${API_URL}/notifications`)
       .then((res) => res.json())
       .then((data) => setNotifications(data))
       .catch((err) => console.error("Error fetching notifications:", err));
@@ -170,14 +193,9 @@ export default function Dashboard({ children }) {
     const fetchEmployeeCount = async () => {
       if (!user) return;
       
-      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-      
       try {
-        const res = await fetch(`${API_URL}/employees/count`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        // Using fetchWithAuth
+        const res = await fetchWithAuth(`${API_URL}/employees/count`);
         const data = await res.json();
         setOverview((prev) => ({ ...prev, employees: data.count }));
       } catch (err) {
@@ -236,14 +254,10 @@ export default function Dashboard({ children }) {
   }, [API_URL]);
 
   const markAsRead = async (id) => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    
     try {
-      await fetch(`${API_URL}/notifications/read/${id}`, { 
+      // Using fetchWithAuth
+      await fetchWithAuth(`${API_URL}/notifications/read/${id}`, { 
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       });
       setNotifications((prev) =>
         prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
@@ -254,14 +268,10 @@ export default function Dashboard({ children }) {
   };
 
   const markAllAsRead = async () => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    
     try {
-      await fetch(`${API_URL}/notifications/read-all`, { 
+      // Using fetchWithAuth
+      await fetchWithAuth(`${API_URL}/notifications/read-all`, { 
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       });
       setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
     } catch (e) {
@@ -270,22 +280,22 @@ export default function Dashboard({ children }) {
   };
 
   const handleLogout = async () => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    
     try {
+      // The backend uses the session cookie (which browser sends automatically) to delete the session.
       await fetch(`${API_URL}/logout`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          // 'Content-Type': 'application/json' is not strictly necessary for POST without a body
         },
-        body: JSON.stringify({ token }),
       });
     } catch (e) {
-      console.error("Logout error:", e);
+      console.error("Logout error (non-fatal):", e);
+      // The browser is redirecting anyway, so we continue with local cleanup.
     }
     
     if (typeof window !== "undefined") {
       localStorage.removeItem("user");
+      // Ensure 'token' is also removed if it were used
       localStorage.removeItem("token");
     }
     setUser(null);
@@ -371,8 +381,11 @@ export default function Dashboard({ children }) {
 
             {/* 4. Upcoming Holidays (ALL HOLIDAYS) */}
             {!user && (
-              <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <Card className="w-full max-w-3xl mx-auto">
+              // FIX START: Ensure the container uses the full width on small screens
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6"> 
+                {/* Remove lg:col-span-3 from here, let it rely on the outer grid structure */}
+                <Card className="w-full lg:max-w-3xl lg:mx-auto">
+                  {/* Changed max-w-3xl mx-auto to be lg specific so it fills 100% on mobile */}
                   <CardHeader className="flex items-center gap-2">
                     <CalendarDays className="w-6 h-6 text-red-500" />
                     <CardTitle>Holidays List</CardTitle>
@@ -401,7 +414,8 @@ export default function Dashboard({ children }) {
                 </Card>
 
 
-                <Card className="col-span-2">
+                {/* FIX END: Ensure Office Info card spans two columns on large screens only */}
+                <Card className="col-span-1 lg:col-span-2"> 
                   <CardHeader className="flex items-center gap-2">
                     <Calendar className="w-6 h-6 text-blue-500" />
                     <CardTitle>Office Info</CardTitle>

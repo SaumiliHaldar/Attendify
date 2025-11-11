@@ -33,7 +33,8 @@ import {
   TableHeader,
   TableRow,
   TableCell,
-} from "@/components/ui/table";
+}
+ from "@/components/ui/table";
 import { Users, Upload, Plus, Loader2 } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
@@ -68,12 +69,17 @@ export default function Employees() {
     }
   }, []);
 
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  // Removed token variable as we rely on session cookie.
+  // We check if 'user' exists to signify we are logged in.
 
   // Fetch Employees
   const fetchEmployees = async () => {
-    if (!token) return;
+    // Check for user existence instead of token
+    if (!user) {
+        setLoading(false);
+        return;
+    } 
+
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -90,9 +96,8 @@ export default function Employees() {
       }
 
       const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
-        headers: { 
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: "include", 
+        // Headers are now optional unless we need to set others (like Content-Type for POST)
       });
       
       const data = await res.json();
@@ -101,7 +106,14 @@ export default function Employees() {
         setEmployees(data.employees || []);
         setTotal(data.pagination?.total || 0);
       } else {
-        toast.error(data.detail || "Failed to fetch employees");
+        // If 403 (Forbidden/Session Expired), clear local user data
+        if (res.status === 403) {
+            localStorage.removeItem("user");
+            setUser(null);
+            toast.error("Session expired. Please log in again.");
+        } else {
+            toast.error(data.detail || "Failed to fetch employees");
+        }
       }
     } catch (err) {
       console.error("Fetch employees error:", err);
@@ -112,10 +124,11 @@ export default function Employees() {
   };
 
   useEffect(() => {
-    if (token) {
+    // Fetch when user state changes (from initial load or login) or pagination/filter changes.
+    if (user) { 
       fetchEmployees();
     }
-  }, [page, empType, token]);
+  }, [page, empType, user, API_URL]); // Added API_URL to dependency array for completeness
 
   // Add Employee
   const handleAddEmployee = async () => {
@@ -127,9 +140,10 @@ export default function Employees() {
     try {
       const res = await fetch(`${API_URL}/employees/manual`, {
         method: "POST",
+        credentials: "include", // Ensure cookie is sent
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          // Authorization header is removed
         },
         body: JSON.stringify(form),
       });
@@ -163,9 +177,7 @@ export default function Employees() {
 
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
-        headers: { 
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: "include", // Ensure cookie is sent
         body: formData,
       });
 
@@ -188,6 +200,12 @@ export default function Employees() {
     } finally {
       setLoading(false);
     }
+  };
+  
+  // Refactored Search Button to call fetchEmployees directly.
+  const handleSearch = () => {
+    setPage(0);
+    fetchEmployees();
   };
 
   return (
@@ -326,8 +344,7 @@ export default function Employees() {
                     onChange={(e) => setSearch(e.target.value)}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') {
-                        setPage(0);
-                        fetchEmployees();
+                        handleSearch(); // Call the fixed handler
                       }
                     }}
                   />
@@ -345,10 +362,7 @@ export default function Employees() {
                     </SelectContent>
                   </Select>
                   <Button 
-                    onClick={() => {
-                      setPage(0);
-                      fetchEmployees();
-                    }} 
+                    onClick={handleSearch} // Call the fixed handler
                     variant="outline"
                   >
                     Search
@@ -396,8 +410,8 @@ export default function Employees() {
                             <TableCell>
                               {emp.created_at
                                 ? new Date(emp.created_at).toLocaleDateString(
-                                    "en-IN"
-                                  )
+                                      "en-IN"
+                                    )
                                 : "-"}
                             </TableCell>
                           </motion.tr>
