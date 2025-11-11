@@ -488,12 +488,14 @@ async def google_callback(request: Request, response: Response):
     try:
         session_id = secrets.token_hex(32)
         expiry = datetime.now(kolkata_tz) + timedelta(days=7)
+        user_agent = request.headers.get("user-agent", "unknown")
         
         # Store in MongoDB
         session_doc = {
             "session_id": session_id,
             "data": user_data,
             "expiry": expiry,
+            "device_info": user_agent,
             "created_at": datetime.now(kolkata_tz),
             "last_accessed": datetime.now(kolkata_tz)
         }
@@ -1286,3 +1288,31 @@ async def export_apprentice(month: str = "2025-07", request: Request = None, res
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=apprentice_attendance_{month}.xlsx"}
     )
+
+# Sessions management
+@app.get("/sessions")
+async def get_user_sessions(request: Request, response: Response):
+    user = await verify_session(request, response)
+    email = user["email"]
+    
+    sessions = await sessions_collection.find({"data.email": email}).to_list(100)
+    for s in sessions:
+        s["_id"] = str(s["_id"])
+        s.pop("data", None)
+    return {"active_sessions": sessions}
+
+@app.delete("/sessions/{session_id}")
+async def delete_user_session(session_id: str, request: Request, response: Response):
+    user = await verify_session(request, response)
+    email = user["email"]
+    
+    session = await sessions_collection.find_one({"session_id": session_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Only allow deleting your own sessions unless superadmin
+    if session["data"]["email"] != email and user.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Not authorized to delete this session")
+    
+    await sessions_collection.delete_one({"session_id": session_id})
+    return {"message": "Session deleted"}
