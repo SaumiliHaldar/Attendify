@@ -1,97 +1,131 @@
 from datetime import datetime, timedelta
-from fastapi import Request, Response
-import pytz
 import secrets
-import json
+import pytz
+from fastapi import HTTPException
 
-# Timezone for Kolkata
+# Timezone setup (Kolkata)
 kolkata_tz = pytz.timezone("Asia/Kolkata")
+utc_tz = pytz.UTC
 
-# In-memory session store
-_sessions = {}     # { session_id: { "data": {...}, "expiry": datetime } }
-
-# Session duration: 7 days
+# Session validity duration
 SESSION_DURATION = timedelta(days=7)
 
-
-# ============================
-# Session Management
-# ============================
-async def create_session(response: Response, user_data: dict):
+# ====================================
+# CREATE OR REUSE SESSION
+# ====================================
+async def create_session(sessions_collection, user_email: str, device_info: str, user_data: dict):
     """
-    Create a new session and store it in memory with a cookie.
+    Create or reuse a session for this user and device.
+    All timestamps stored as UTC to avoid tz conflicts.
     """
-    session_id = secrets.token_hex(32)
-    expiry = datetime.now(kolkata_tz) + SESSION_DURATION
+    now = datetime.now(utc_tz)
 
-    _sessions[session_id] = {"data": user_data, "expiry": expiry}
-
-    response.set_cookie(
-        key="session_id",
-        value=session_id,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=int(SESSION_DURATION.total_seconds()),
+    existing = await sessions_collection.find_one(
+        {"data.email": user_email, "device_info": device_info}
     )
 
-    print(f"[SESSION] Created for {user_data.get('email')} -> {session_id}")
+    if existing:
+        expiry = existing.get("expiry")
+        if expiry and expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=utc_tz)
+
+        if expiry and expiry < now:
+            await sessions_collection.delete_one({"_id": existing["_id"]})
+            print(f"[SESSION] Expired & removed for {user_email}:{device_info[:40]}")
+        else:
+            new_expiry = now + SESSION_DURATION
+            await sessions_collection.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"expiry": new_expiry, "last_accessed": now}},
+            )
+            print(f"[SESSION] Reused for {user_email}:{device_info[:40]}")
+            return existing["session_id"]
+
+    # Create new session
+    session_id = secrets.token_hex(32)
+    session_doc = {
+        "session_id": session_id,
+        "data": user_data,
+        "device_info": device_info,
+        "created_at": now,
+        "last_accessed": now,
+        "expiry": now + SESSION_DURATION,
+    }
+
+    await sessions_collection.insert_one(session_doc)
+    print(f"[SESSION] Created NEW for {user_email}:{device_info[:40]}")
     return session_id
 
 
-async def get_session(request: Request, response: Response = None):
+# ====================================
+# GET / VALIDATE SESSION
+# ====================================
+async def get_session(sessions_collection, session_id: str):
     """
-    Retrieve and refresh the session.
-    Returns None if the session has expired or is invalid.
+    Retrieve and auto-refresh a session.
+    Handles tz-naive vs tz-aware safely.
     """
-    session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in _sessions:
+    session = await sessions_collection.find_one({"session_id": session_id})
+    if not session:
         return None
 
-    session = _sessions[session_id]
-    now = datetime.now(kolkata_tz)
+    now = datetime.now(utc_tz)
+    expiry = session.get("expiry")
 
-    # Check expiration
-    if session["expiry"] < now:
+    # Make expiry tz-aware if missing
+    if expiry and expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=utc_tz)
+
+    if not expiry or expiry < now:
+        await sessions_collection.delete_one({"_id": session["_id"]})
         print(f"[SESSION] Expired -> {session_id}")
-        del _sessions[session_id]
         return None
 
-    # Auto-refresh expiry
-    session["expiry"] = now + SESSION_DURATION
-    if response:
-        response.set_cookie(
-            key="session_id",
-            value=session_id,
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            max_age=int(SESSION_DURATION.total_seconds()),
-        )
+    # Refresh expiry
+    await sessions_collection.update_one(
+        {"_id": session["_id"]},
+        {"$set": {"expiry": now + SESSION_DURATION, "last_accessed": now}},
+    )
 
     return session["data"]
 
 
-async def delete_session(request: Request, response: Response):
-    """
-    Clear the user's session and delete cookie.
-    """
-    session_id = request.cookies.get("session_id")
-    if session_id and session_id in _sessions:
-        del _sessions[session_id]
+# ====================================
+# DELETE SESSION (Manual Logout)
+# ====================================
+async def delete_session(sessions_collection, session_id: str):
+    result = await sessions_collection.delete_one({"session_id": session_id})
+    if result.deleted_count:
         print(f"[SESSION] Deleted -> {session_id}")
+        return True
+    return False
 
-    response.delete_cookie("session_id")
-    return True
+
+# ====================================
+# CLEANUP EXPIRED SESSIONS
+# ====================================
+async def cleanup_expired_sessions(sessions_collection):
+    now = datetime.now(utc_tz)
+    result = await sessions_collection.delete_many({"expiry": {"$lt": now}})
+    if result.deleted_count:
+        print(f"[SESSION] Cleaned up {result.deleted_count} expired sessions.")
 
 
-async def cleanup_expired_sessions():
+# ====================================
+# VERIFY SESSION (for Protected Routes)
+# ====================================
+async def verify_session(request, sessions_collection):
     """
-    Optional background task to clean old sessions.
+    Verify Bearer token and return user data if valid.
     """
-    now = datetime.now(kolkata_tz)
-    expired = [sid for sid, s in _sessions.items() if s["expiry"] < now]
-    for sid in expired:
-        del _sessions[sid]
-    if expired:
-        print(f"[SESSION] Cleaned up {len(expired)} expired sessions.")
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid session token")
+
+    session_id = auth_header.split(" ")[1]
+    session_data = await get_session(sessions_collection, session_id)
+
+    if not session_data:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    return session_data
