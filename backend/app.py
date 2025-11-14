@@ -5,11 +5,15 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from bson import ObjectId
 from urllib.parse import urlencode
+from pathlib import Path
+import tempfile
+import time
 from datetime import datetime, timedelta
 from excelmaker import create_attendance_excel, REGULAR_LEGEND, APPRENTICE_LEGEND
 from sessions import create_session, get_session, delete_session, verify_session, cleanup_expired_sessions
 import pandas as pd
 import pytz
+from pytz import timezone
 import httpx
 import logging
 import os
@@ -493,6 +497,7 @@ async def get_employee_count(request: Request, response: Response):
 @app.post("/holidays")
 async def add_holiday(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
+
     if user["role"] != "superadmin":
         await auto_notify(request, user["email"], "add holiday")
         raise HTTPException(status_code=403, detail="Not authorized to add holidays")
@@ -500,76 +505,165 @@ async def add_holiday(request: Request, data: dict):
     if "date" not in data or "name" not in data:
         raise HTTPException(status_code=400, detail="Fields 'date' and 'name' required")
 
-    await db["holidays"].insert_one(data)
-    return {"message": f"Holiday '{data['name']}' added for {data['date']}"}
+    # Validate date
+    try:
+        date_obj = pd.to_datetime(data["date"], dayfirst=True, errors="raise")
+    except:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    holiday_doc = {
+        "name": data["name"],
+        "date": date_obj.strftime("%Y-%m-%d"),
+        "day": date_obj.strftime("%A"),
+        "year": date_obj.year,
+        "created_at": datetime.now(kolkata_tz),
+        "created_by": user["email"],
+    }
+
+    result = await db["holidays"].insert_one(holiday_doc)
+
+    # MongoDB added ObjectId to holiday_doc → clean it
+    clean_doc = dict(holiday_doc)
+    clean_doc["_id"] = str(result.inserted_id)
+
+    return {
+        "message": f"Holiday '{clean_doc['name']}' added for {clean_doc['date']}",
+        "holiday": clean_doc
+    }
+
 
 @app.get("/holidays")
 async def list_holidays():
     holidays = await db["holidays"].find().sort("date", 1).to_list(100)
+
+    for h in holidays:
+        h["_id"] = str(h["_id"])
+
     return {"holidays": holidays, "count": len(holidays)}
 
+
 @app.post("/upload/holidays")
-async def upload_holidays(file: UploadFile = File(...)):
-    import tempfile
-
-    # Save uploaded Excel temporarily
-    suffix = os.path.splitext(file.filename)[-1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
-        tmp.write(contents)
-        temp_path = tmp.name
-
-    holidays = []
+async def upload_holidays(request: Request, file: UploadFile = File(...)):
+    user = await verify_session(request, sessions_collection)
+    created_by = user.get("email")
+    # Save uploaded file to temp
     try:
-        # --- Read HOLIDAYS sheet with correct header offset ---
-        df = pd.read_excel(temp_path, sheet_name="HOLIDAYS", skiprows=2)
+        suffix = Path(file.filename).suffix or ".xlsx"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            temp_path = tmp.name
+            tmp.write(await file.read())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {e}")
 
-        # --- Clean column names ---
+    try:
+        # Debug: show filename (useful to confirm correct file from client)
+        logger.info(f"[HOLIDAYS UPLOAD] Uploaded filename: {file.filename}")
+
+        # Open workbook and auto-detect sheet containing "holiday"
+        try:
+            with pd.ExcelFile(temp_path) as xl:
+                sheets = xl.sheet_names
+                logger.info(f"[HOLIDAYS UPLOAD] Sheets found: {sheets}")
+
+                # Build normalized map: normalized_name -> actual_name
+                normalized = {s.strip().lower(): s for s in sheets}
+
+                # Prefer exact "holidays" or any sheet that contains "holiday"
+                sheet = None
+                if "holidays" in normalized:
+                    sheet = normalized["holidays"]
+                else:
+                    for sname in sheets:
+                        if "holiday" in sname.lower():
+                            sheet = sname
+                            break
+
+                if not sheet:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No HOLIDAYS sheet found. Sheets detected: {sheets}"
+                    )
+
+                # Parse with header row at index 1
+                df = xl.parse(sheet_name=sheet, header=1)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error reading Excel file: {e}")
+
+        # Normalize column names
         df.columns = [str(c).strip() for c in df.columns]
 
-        # Expected columns
-        if "Name of the Occasion" not in df.columns or "Date" not in df.columns:
+        # Validate required columns
+        required = {"Name of the Occasion", "Date"}
+        missing = required - set(df.columns)
+        if missing:
             raise HTTPException(
                 status_code=400,
-                detail=f"Expected columns 'Name of the Occasion' and 'Date' not found. Found: {list(df.columns)}"
+                detail=f"Missing required columns: {sorted(list(missing))}. Found columns: {list(df.columns)}"
             )
 
-        # Drop blank rows
+        # Drop rows missing essential data
         df_filtered = df.dropna(subset=["Name of the Occasion", "Date"])
 
-        for _, row in df_filtered.iterrows():
-            name = str(row["Name of the Occasion"]).strip()
-            date_str = str(row["Date"]).strip()
-            date_obj = pd.to_datetime(date_str, dayfirst=True, errors="coerce")
-            if pd.notna(date_obj):
-                holidays.append({
-                    "name": name,
-                    "date": date_obj.strftime("%Y-%m-%d"),
-                    "day": row.get("Day", ""),
-                    "month": row.get("Months", ""),
-                    "year": int(row.get("Year", date_obj.year)),
-                })
+        holidays = []
+        for _, r in df_filtered.iterrows():
+            name = str(r["Name of the Occasion"]).strip()
+            date_raw = str(r["Date"]).strip()
+            # parse with dayfirst; coerce invalid -> NaT
+            date_obj = pd.to_datetime(date_raw, dayfirst=True, errors="coerce")
+            if pd.isna(date_obj):
+                logger.warning(f"[HOLIDAYS UPLOAD] Skipping invalid date: {date_raw} for '{name}'")
+                continue
+
+            holidays.append({
+                "name": name,
+                "date": date_obj.strftime("%Y-%m-%d"),
+                "day": r.get("Day", ""),
+                "year": int(r.get("Year", date_obj.year)),
+                "created_at": datetime.now(kolkata_tz),
+                "created_by": created_by
+            })
 
         if not holidays:
-            raise HTTPException(status_code=400, detail="No valid holiday data found in the sheet.")
+            raise HTTPException(status_code=400, detail="No valid holiday rows found after parsing.")
 
+        # Save to DB
         hol_collection = db["holidays"]
         await hol_collection.delete_many({})
         await hol_collection.insert_many(holidays)
 
+        # Clean sample so it contains no ObjectId
+        clean_sample = []
+        for h in holidays[:5]:
+            h2 = dict(h)
+            h2.pop("_id", None)   # remove ObjectId
+            clean_sample.append(h2)
+
         return {
             "message": f"{len(holidays)} holidays uploaded successfully.",
-            "sample": holidays[:3]  # return a preview
+            "sample": clean_sample
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception("[HOLIDAYS UPLOAD] Unexpected error")
         raise HTTPException(status_code=500, detail=f"Error parsing holidays: {e}")
-
     finally:
+        # Cleanup temp file
         try:
             os.remove(temp_path)
-        except Exception as e:
-            print(f"Could not delete temp file: {e}")
+        except PermissionError:
+            # brief pause then retry
+            time.sleep(0.2)
+            try:
+                os.remove(temp_path)
+            except Exception:
+                logger.warning(f"Could not delete temp file {temp_path} after retry.")
+        except Exception:
+            logger.warning(f"Could not delete temp file {temp_path}.")
+
 
 # ===================================
 # SHIFTS
