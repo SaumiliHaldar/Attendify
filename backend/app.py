@@ -21,6 +21,7 @@ import json
 import calendar
 import secrets
 from collections import defaultdict
+from pymongo.errors import DuplicateKeyError
 
 # ===================================
 # Setup
@@ -379,6 +380,7 @@ async def logout(request: Request):
 @app.post("/employees")
 async def add_employee(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
+
     if user["role"] != "superadmin" and not user.get("permissions", {}).get("can_add_employee", False):
         await auto_notify(request, user["email"], "add employee")
         raise HTTPException(status_code=403, detail="Not authorized to add employees")
@@ -387,9 +389,19 @@ async def add_employee(request: Request, data: dict):
     if not all(k in data for k in required_fields):
         raise HTTPException(status_code=400, detail=f"Missing fields: {required_fields}")
 
-    await db["employees"].insert_one(data)
-    return {"message": f"Employee {data['name']} added successfully"}
+    # Clean emp_no
+    data["emp_no"] = str(data["emp_no"]).split(".")[0]
 
+    try:
+        await db["employees"].insert_one(data)
+
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Employee with emp_no {data['emp_no']} already exists"
+        )
+
+    return {"message": f"Employee {data['name']} added successfully"}
 @app.post("/employees/manual")
 async def bulk_add_employees(request: Request, file: UploadFile = File(...)):
     user = await verify_session(request, sessions_collection)
@@ -403,7 +415,7 @@ async def bulk_add_employees(request: Request, file: UploadFile = File(...)):
     return {"message": f"{len(records)} employees uploaded successfully"}
 
 @app.post("/upload/employees")
-async def load_employees():
+async def load_employees_safe():
     EMPLOYEE_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
     regular_sheets = [
         "ATTENDANCE_SSEE_SW_KGP_I", 
@@ -424,7 +436,6 @@ async def load_employees():
                 "DESIGNATION": "Designation",
                 "EMPLOYEE NO.": "Employee_No"
             }, inplace=True)
-            
             df = df.dropna(subset=["Employee_No"])
 
             for _, row in df.iterrows():
@@ -463,10 +474,30 @@ async def load_employees():
         raise HTTPException(status_code=400, detail="No employee data found.")
 
     emp_collection = db["employees"]
-    await emp_collection.delete_many({})
-    await emp_collection.insert_many(all_employees)
+    added, updated, unchanged = 0, 0, 0
 
-    return {"message": f"{len(all_employees)} employee details loaded."}
+    for emp in all_employees:
+        existing = await emp_collection.find_one({"emp_no": emp["emp_no"]})
+        if existing:
+            if existing != emp:
+                await emp_collection.update_one({"emp_no": emp["emp_no"]}, {"$set": emp})
+                updated += 1
+            else:
+                unchanged += 1
+        else:
+            await emp_collection.insert_one(emp)
+            added += 1
+
+    return {
+        "message": "Employee upload completed.",
+        "summary": {
+            "added": added,
+            "updated": updated,
+            "unchanged": unchanged,
+            "skipped": 0
+        },
+        "total_processed": len(all_employees)
+    }
 
 @app.delete("/employees/{emp_no}")
 async def delete_employee(emp_no: str, request: Request):
