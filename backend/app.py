@@ -424,6 +424,7 @@ async def load_employees():
                 "DESIGNATION": "Designation",
                 "EMPLOYEE NO.": "Employee_No"
             }, inplace=True)
+            
             df = df.dropna(subset=["Employee_No"])
 
             for _, row in df.iterrows():
