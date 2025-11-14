@@ -515,7 +515,10 @@ async def delete_employee(emp_no: str, request: Request):
 @app.get("/employees")
 async def get_employees():
     emps = await db["employees"].find().sort("emp_no", 1).to_list(200)
+    for e in emps:
+        e["_id"] = str(e["_id"])
     return {"employees": emps, "count": len(emps)}
+
 
 @app.get("/employees/count")
 async def get_employee_count(request: Request, response: Response):
@@ -835,20 +838,33 @@ async def add_attendance(request: Request, data: dict):
     if not all(k in data for k in required):
         raise HTTPException(status_code=400, detail=f"Fields required: {required}")
 
+    # ----- Fetch employee info -----
+    emp_no_clean = str(data["emp_no"]).split(".")[0]
+    emp = await db["employees"].find_one({"emp_no": emp_no_clean})
+    if not emp:
+        raise HTTPException(status_code=404, detail=f"Employee {data['emp_no']} not found")
+
     date_obj = datetime.strptime(data["date"], "%Y-%m-%d")
     month_str = date_obj.strftime("%Y-%m")
+    date_key = date_obj.strftime("%d-%m-%Y")
 
+    # Store attendance with extra info
     await db["attendance"].update_one(
-        {"emp_no": data["emp_no"], "month": month_str},
-        {"$set": {f"records.{date_obj.strftime('%d-%m-%Y')}": data["code"]}},
+        {"emp_no": emp["emp_no"], "month": month_str},
+        {"$set": {
+            f"attendance.{date_key}": data["code"],  # <-- updated field name here
+            "emp_name": emp["name"],
+            "type": emp["type"],
+            "updated_by": user["email"]
+        }},
         upsert=True
     )
 
-    return {"message": f"Attendance marked for {data['emp_no']} on {data['date']}"}
+    return {"message": f"Attendance marked for {emp['emp_no']} - {emp['name']} on {data['date']}"}
+
 
 @app.post("/upload/attendance")
 async def upload_attendance_excel(request: Request, file: UploadFile = File(...)):
-    """Upload Excel attendance sheet (11th–10th for regular, 1–31 for apprentice)."""
     user = await verify_session(request, sessions_collection)
     if user["role"] != "superadmin":
         await auto_notify(request, user["email"], "upload attendance Excel")
@@ -871,40 +887,42 @@ async def upload_attendance_excel(request: Request, file: UploadFile = File(...)
     inserted = 0
     for _, row in df.iterrows():
         emp_no = str(row["Emp No"]).strip()
-        emp_name = str(row["Name"]).strip()
-        emp_type = str(row["Type"]).strip().lower()
-
-        if not emp_no or not emp_name:
+        if not emp_no:
             continue
 
-        # Determine period
+        # Fetch employee from DB
+        emp = await db["employees"].find_one({"emp_no": emp_no})
+        if not emp:
+            continue  # skip if employee not found
+
+        emp_name = emp["name"]
+        emp_type = emp["type"]
+
+        # Determine month for attendance record
         today = datetime.now(kolkata_tz)
         if emp_type == "regular":
-            # Regular cycle 11th prev → 10th current
             start_day = 11
             start_month = today.month - 1 if today.month > 1 else 12
             start_year = today.year if today.month > 1 else today.year - 1
             month_str = f"{start_year}-{start_month:02d}"
         else:
-            # Apprentices → normal calendar month
             month_str = today.strftime("%Y-%m")
 
-        # Construct records dict
-        records = {}
+        attendance = {}
         for col in date_cols:
             val = str(row[col]).strip() if not pd.isna(row[col]) else ""
             if val:
                 try:
                     day = int(col)
                     if emp_type == "regular":
-                        date_obj = datetime(start_year, start_month, start_day, tzinfo=kolkata_tz) + timedelta(days=(day - 1))
+                        date_obj = datetime(start_year, start_month, start_day, tzinfo=kolkata_tz) + timedelta(days=(day-1))
                     else:
                         date_obj = datetime(today.year, today.month, day, tzinfo=kolkata_tz)
-                    records[date_obj.strftime("%d-%m-%Y")] = val
+                    attendance[date_obj.strftime("%d-%m-%Y")] = val
                 except Exception:
                     continue
 
-        if not records:
+        if not attendance:
             continue
 
         await db["attendance"].update_one(
@@ -912,7 +930,8 @@ async def upload_attendance_excel(request: Request, file: UploadFile = File(...)
             {"$set": {
                 "emp_name": emp_name,
                 "type": emp_type,
-                "records": records,
+                "attendance": attendance,
+                "updated_by": user["email"],
                 "uploaded_at": datetime.now(kolkata_tz)
             }},
             upsert=True

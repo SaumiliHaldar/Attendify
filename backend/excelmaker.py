@@ -110,7 +110,8 @@ async def create_attendance_excel(db, employee_type: str, month: str) -> BytesIO
     holidays = {doc["date"] async for doc in hol_cursor}
 
     att_cursor = db["attendance"].find({"type": employee_type, "month": month})
-    attendance = {doc["emp_no"]: doc["records"] async for doc in att_cursor}
+    attendance = {doc["emp_no"]: doc.get("attendance", {}) async for doc in att_cursor}
+
 
     # --------------------------
     # Workbook & header section
