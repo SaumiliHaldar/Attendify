@@ -133,7 +133,7 @@ async def health_check():
 @app.on_event("startup")
 async def setup_indexes():
     await db["attendance"].create_index([("emp_no", 1), ("month", 1)], unique=True)
-    await db["employees"].create_index("emp_no")
+    await db["employees"].create_index("emp_no", unique=True)
     await db["shifts"].create_index([("emp_no", 1), ("month", 1)])
     await sessions_collection.create_index("expiry", expireAfterSeconds=0)
     logger.info("Database indexes created.")
@@ -428,7 +428,7 @@ async def load_employees():
 
             for _, row in df.iterrows():
                 all_employees.append({
-                    "emp_no": str(row["Employee_No"]).strip(),
+                    "emp_no": str(row["Employee_No"]).strip().split(".")[0].replace(" ", ""),
                     "name": str(row["Name"]).strip(),
                     "designation": str(row["Designation"]).strip(),
                     "type": "regular"
@@ -450,7 +450,7 @@ async def load_employees():
 
         for _, row in df.iterrows():
             all_employees.append({
-                "emp_no": str(row["Employee_No"]).strip(),
+                "emp_no": str(row["Employee_No"]).strip().split(".")[0].replace(" ", ""),
                 "name": str(row["Name"]).strip(),
                 "designation": str(row["Designation"]).strip(),
                 "type": "apprentice"
@@ -668,23 +668,122 @@ async def upload_holidays(request: Request, file: UploadFile = File(...)):
 # ===================================
 # SHIFTS
 # ===================================
+# @app.post("/shift")
+# async def assign_shift(request: Request, data: dict):
+#     user = await verify_session(request, sessions_collection)
+
+#     emp_no = data.get("emp_no")
+#     shift = data.get("shift")
+#     date = data.get("date")
+
+#     if not emp_no or not shift or not date:
+#         raise HTTPException(status_code=400, detail="emp_no, shift, date required")
+
+#     # fetch employee details
+#     emp = await db["employees"].find_one({"emp_no": emp_no})
+#     if not emp:
+#         raise HTTPException(status_code=404, detail="Employee not found")
+
+#     name = emp["name"]
+
+#     # insert shift record
+#     doc = {
+#         "emp_no": emp_no,
+#         "name": name,         
+#         "shift": shift,
+#         "date": date,
+#         "updated_at": datetime.now(kolkata_tz),
+#         "updated_by": user["email"],
+#     }
+
+#     await db["shifts"].update_one(
+#         {"emp_no": emp_no, "date": date},  
+#         {"$set": doc},
+#         upsert=True
+#     )
+
+#     return {"message": f"Shift {shift} assigned to {name} ({emp_no}) on {date}"}
+
 @app.post("/shift")
 async def assign_shift(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
-    if user["role"] != "superadmin":
-        await auto_notify(request, user["email"], "modify shift")
-        raise HTTPException(status_code=403, detail="Only superadmin can assign shifts")
 
-    required = ["emp_no", "month", "shift"]
-    if not all(k in data for k in required):
-        raise HTTPException(status_code=400, detail=f"Fields required: {required}")
+    emp_no = data.get("emp_no")
+    name_query = data.get("name")
+    shift = data.get("shift")
+    date = data.get("date")
+
+    if not shift or not date:
+        raise HTTPException(status_code=400, detail="shift and date required")
+
+    # ----- Step 1: Fetch employee -----
+    emp = None
+
+    # If emp_no provided
+    if emp_no:
+        # Clean float-style emp_no: "50709618284.0" -> "50709618284"
+        clean_no = str(emp_no).split(".")[0]
+
+        emp = await db["employees"].find_one({"emp_no": clean_no})
+        if not emp:
+            raise HTTPException(status_code=404, detail=f"Employee not found for emp_no {clean_no}")
+
+    # If name provided: fuzzy matching anywhere, case-insensitive
+    elif name_query:
+        cursor = db["employees"].find({
+            "name": {"$regex": name_query, "$options": "i"}
+        })
+
+        matches = await cursor.to_list(length=20)
+
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No employees found matching '{name_query}'")
+
+        if len(matches) > 1:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Multiple employees match this name",
+                    "matches": [
+                        {
+                            "emp_no": m["emp_no"],
+                            "name": m["name"],
+                            "designation": m.get("designation", "")
+                        }
+                        for m in matches
+                    ]
+                }
+            )
+
+        emp = matches[0]
+
+    else:
+        raise HTTPException(status_code=400, detail="Provide emp_no or name")
+
+    # Clean emp_no for consistency
+    cleaned_emp_no = str(emp["emp_no"]).split(".")[0]
+
+    # ----- Step 2: Insert/update shift -----
+    doc = {
+        "emp_no": cleaned_emp_no,
+        "name": emp["name"],
+        "designation": emp.get("designation", ""),
+        "shift": shift,
+        "date": date,
+        "updated_at": datetime.now(kolkata_tz),
+        "updated_by": user["email"],
+    }
 
     await db["shifts"].update_one(
-        {"emp_no": data["emp_no"], "month": data["month"]},
-        {"$set": {"shift": data["shift"], "updated_at": datetime.now(kolkata_tz)}},
+        {"emp_no": cleaned_emp_no, "date": date},
+        {"$set": doc},
         upsert=True
     )
-    return {"message": f"Shift assigned for {data['emp_no']} ({data['month']})"}
+
+    return {
+        "message": f"Shift {shift} assigned to {emp['name']} ({cleaned_emp_no}) on {date}",
+        "shift_record": doc
+    }
 
 # ===================================
 # ATTENDANCE
