@@ -355,6 +355,7 @@ async def google_callback(request: Request, response: Response):
         "session_id": session_id,
         "email": user_email,
         "name": user_info.get("name", ""),
+        "picture": user_info.get("picture", ""),
         "role": role,
     }
 
