@@ -985,13 +985,19 @@ async def update_admin_permissions(admin_email: str, request: Request, data: dic
     if not admin_doc:
         raise HTTPException(status_code=404, detail="Admin not found")
 
-    # Filter only valid permission keys
-    updates = {k: bool(v) for k, v in data.items() if k in DEFAULT_ADMIN_PERMISSIONS}
-    if not updates:
-        raise HTTPException(status_code=400, detail="No valid permission keys provided")
+    # Fetch existing permissions
+    existing_permissions = admin_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
 
-    # Update in DB
-    await collection.update_one({"email": admin_email}, {"$set": {"permissions": updates}})
+    # Update only the keys provided
+    for k, v in data.items():
+        if k in DEFAULT_ADMIN_PERMISSIONS:
+            existing_permissions[k] = bool(v)
+
+    # Write back merged permissions
+    await collection.update_one(
+        {"email": admin_email},
+        {"$set": {"permissions": existing_permissions}}
+    )
 
     # Notify the admin
     notification = {
