@@ -429,6 +429,15 @@ async def add_employee(request: Request, data: dict):
     if not is_superadmin:
         await auto_notify(request, user["email"], f"added employee {emp_no}")
 
+    try:
+        await db["employees"].insert_one(data)
+
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Employee with emp_no {data['emp_no']} already exists"
+        )
+
     return {"message": f"Employee {data['name']} added successfully"}
 
 
