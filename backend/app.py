@@ -747,42 +747,181 @@ async def upload_holidays(request: Request, file: UploadFile = File(...)):
 # ===================================
 # SHIFTS
 # ===================================
+# @app.post("/shift")
+# async def assign_shift(request: Request, data: dict):
+#     user = await verify_session(request, sessions_collection)
+
+#     emp_no = data.get("emp_no")
+#     name_query = data.get("name")
+#     shift = data.get("shift")
+#     date = data.get("date")
+
+#     if not shift or not date:
+#         raise HTTPException(status_code=400, detail="shift and date required")
+
+#     # ----- Step 1: Fetch employee -----
+#     emp = None
+
+#     # If emp_no provided
+#     if emp_no:
+#         # Clean float-style emp_no: "50709618284.0" -> "50709618284"
+#         clean_no = str(emp_no).split(".")[0]
+
+#         emp = await db["employees"].find_one({"emp_no": clean_no})
+#         if not emp:
+#             raise HTTPException(status_code=404, detail=f"Employee not found for emp_no {clean_no}")
+
+#     # If name provided: fuzzy matching anywhere, case-insensitive
+#     elif name_query:
+#         cursor = db["employees"].find({
+#             "name": {"$regex": name_query, "$options": "i"}
+#         })
+
+#         matches = await cursor.to_list(length=20)
+
+#         if not matches:
+#             raise HTTPException(status_code=404, detail=f"No employees found matching '{name_query}'")
+
+#         if len(matches) > 1:
+#             return JSONResponse(
+#                 status_code=409,
+#                 content={
+#                     "detail": "Multiple employees match this name",
+#                     "matches": [
+#                         {
+#                             "emp_no": m["emp_no"],
+#                             "name": m["name"],
+#                             "designation": m.get("designation", "")
+#                         }
+#                         for m in matches
+#                     ]
+#                 }
+#             )
+
+#         emp = matches[0]
+
+#     else:
+#         raise HTTPException(status_code=400, detail="Provide emp_no or name")
+
+#     # Clean emp_no for consistency
+#     cleaned_emp_no = str(emp["emp_no"]).split(".")[0]
+
+#     # ----- Step 2: Insert/update shift -----
+#     doc = {
+#         "emp_no": cleaned_emp_no,
+#         "name": emp["name"],
+#         "designation": emp.get("designation", ""),
+#         "shift": shift,
+#         "date": date,
+#         "updated_at": datetime.now(kolkata_tz),
+#         "updated_by": user["email"],
+#     }
+
+#     await db["shifts"].update_one(
+#         {"emp_no": cleaned_emp_no, "date": date},
+#         {"$set": doc},
+#         upsert=True
+#     )
+
+#     return {
+#         "message": f"Shift {shift} assigned to {emp['name']} ({cleaned_emp_no}) on {date}",
+#         "shift_record": doc
+#     }
+
+
 @app.post("/shift")
 async def assign_shift(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
+
     is_superadmin = user["role"] == "superadmin"
-    can_add_shift = user.get("permissions", {}).get("can_add_shift", False)
+    permissions = user.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
 
-    if not (is_superadmin or can_add_shift):
-        await auto_notify(request, user["email"], "attempted to assign shift")
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    # Fetch employee (emp_no or name)
     emp_no = data.get("emp_no")
-    date = data.get("date")
+    name_query = data.get("name")
     shift = data.get("shift")
-    if not emp_no or not date or not shift:
-        raise HTTPException(status_code=400, detail="emp_no, date, and shift required")
+    date = data.get("date")
 
-    existing = await db["shifts"].find_one({"emp_no": emp_no, "date": date})
-    if existing and not is_superadmin:
-        await auto_notify(request, user["email"], f"attempted to edit shift for {emp_no} on {date}")
-        raise HTTPException(status_code=403, detail="Admins cannot edit existing shifts")
+    if not shift or not date:
+        raise HTTPException(status_code=400, detail="shift and date required")
 
-    doc = {
-        "emp_no": emp_no,
-        "shift": shift,
-        "date": date,
-        "updated_by": user["email"],
-        "updated_at": datetime.now(kolkata_tz)
-    }
-
-    await db["shifts"].update_one({"emp_no": emp_no, "date": date}, {"$set": doc}, upsert=True)
+    # ============================
+    # Permission Check
+    # ============================
+    # Check if shift already exists
+    existing_shift = None
+    if emp_no:
+        clean_no = str(emp_no).split(".")[0]
+        existing_shift = await db["shifts"].find_one({"emp_no": clean_no, "date": date})
 
     if not is_superadmin:
-        await auto_notify(request, user["email"], f"added shift for {emp_no} on {date}")
+        if existing_shift:
+            # Editing existing shift
+            if not permissions.get("can_edit_shift", False):
+                await auto_notify(request, user["email"], f"attempted to edit shift for {clean_no} on {date}")
+                raise HTTPException(status_code=403, detail="Not authorized to edit shifts")
+        else:
+            # Adding new shift
+            if not permissions.get("can_add_shift", False):
+                await auto_notify(request, user["email"], f"attempted to add shift for {clean_no} on {date}")
+                raise HTTPException(status_code=403, detail="Not authorized to add shifts")
 
-    return {"message": f"Shift assigned to {emp_no} on {date}"}
+    # =============================
+    # Employee Lookup (same as before)
+    # =============================
+    emp = None
+    if emp_no:
+        clean_no = str(emp_no).split(".")[0]
+        emp = await db["employees"].find_one({"emp_no": clean_no})
+        if not emp:
+            raise HTTPException(status_code=404, detail=f"Employee not found: {clean_no}")
+
+    elif name_query:
+        cursor = db["employees"].find({"name": {"$regex": name_query, "$options": "i"}})
+        matches = await cursor.to_list(length=20)
+
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No employees found matching '{name_query}'")
+        if len(matches) > 1:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Multiple employees match this name",
+                    "matches": [
+                        {"emp_no": m["emp_no"], "name": m["name"], "designation": m.get("designation", "")}
+                        for m in matches
+                    ]
+                }
+            )
+
+        emp = matches[0]
+        clean_no = emp["emp_no"]
+
+    else:
+        raise HTTPException(status_code=400, detail="Provide emp_no or name")
+
+    # =============================
+    # Insert/update the shift
+    # =============================
+    doc = {
+        "emp_no": clean_no,
+        "name": emp["name"],
+        "designation": emp.get("designation", ""),
+        "shift": shift,
+        "date": date,
+        "updated_at": datetime.now(kolkata_tz),
+        "updated_by": user["email"],
+    }
+
+    await db["shifts"].update_one(
+        {"emp_no": clean_no, "date": date},
+        {"$set": doc},
+        upsert=True,
+    )
+
+    return {
+        "message": f"Shift '{shift}' assigned to {emp['name']} ({clean_no}) on {date}",
+        "shift_record": doc,
+    }
 
 
 # ===================================
