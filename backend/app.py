@@ -22,6 +22,7 @@ import calendar
 import secrets
 from collections import defaultdict
 from pymongo.errors import DuplicateKeyError
+from typing import List
 
 # ===================================
 # Setup
@@ -72,11 +73,17 @@ EMPLOYEE_SHEET = "./ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
 active_connections: list[WebSocket] = []
 
 async def notify_superadmins(message: dict):
+    disconnected = []
     for conn in active_connections:
         try:
-            await conn.send_text(json.dumps(message))
-        except:
-            continue
+            await conn.send_json(message)  # Use JSON for structured messages
+        except Exception:
+            disconnected.append(conn)
+    # Clean up disconnected clients
+    for conn in disconnected:
+        if conn in active_connections:
+            active_connections.remove(conn)
+
 
 async def auto_notify(request: Request, actor: str, action: str):
     now = datetime.now(kolkata_tz)
@@ -120,9 +127,19 @@ async def websocket_endpoint(websocket: WebSocket):
     active_connections.append(websocket)
     try:
         while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
+            try:
+                data = await websocket.receive_text()
+                # Optional: respond to client ping
+                if data.lower() == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                # Keep alive on other receive errors
+                continue
+    finally:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 # ===================================
 # Health + Index setup
@@ -382,27 +399,39 @@ async def logout(request: Request):
 async def add_employee(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
 
-    if user["role"] != "superadmin" and not user.get("permissions", {}).get("can_add_employee", False):
-        await auto_notify(request, user["email"], "add employee")
+    is_superadmin = user["role"] == "superadmin"
+    can_add_emp = user.get("permissions", {}).get("can_add_employee", False)
+
+    if not (is_superadmin or can_add_emp):
+        await auto_notify(request, user["email"], "attempted to add employee")
         raise HTTPException(status_code=403, detail="Not authorized to add employees")
 
     required_fields = ["emp_no", "name", "designation", "type"]
     if not all(k in data for k in required_fields):
         raise HTTPException(status_code=400, detail=f"Missing fields: {required_fields}")
 
-    # Clean emp_no
-    data["emp_no"] = str(data["emp_no"]).split(".")[0]
+    emp_no = str(data["emp_no"]).split(".")[0].strip()
+    
+    existing = await db["employees"].find_one({"emp_no": emp_no})
+    if existing:
+        if not is_superadmin:
+            # Admin cannot edit existing employees
+            await auto_notify(request, user["email"], f"attempted to edit employee {emp_no}")
+            raise HTTPException(status_code=403, detail="Admins cannot edit existing employees")
+        else:
+            await db["employees"].update_one({"emp_no": emp_no}, {"$set": data})
+            return {"message": f"Employee {emp_no} updated successfully"}
 
-    try:
-        await db["employees"].insert_one(data)
-
-    except DuplicateKeyError:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Employee with emp_no {data['emp_no']} already exists"
-        )
+    # Insert new employee
+    await db["employees"].insert_one(data)
+    
+    # Notify superadmins if added by admin
+    if not is_superadmin:
+        await auto_notify(request, user["email"], f"added employee {emp_no}")
 
     return {"message": f"Employee {data['name']} added successfully"}
+
+
 @app.post("/employees/manual")
 async def bulk_add_employees(request: Request, file: UploadFile = File(...)):
     user = await verify_session(request, sessions_collection)
@@ -704,122 +733,43 @@ async def upload_holidays(request: Request, file: UploadFile = File(...)):
 # ===================================
 # SHIFTS
 # ===================================
-# @app.post("/shift")
-# async def assign_shift(request: Request, data: dict):
-#     user = await verify_session(request, sessions_collection)
-
-#     emp_no = data.get("emp_no")
-#     shift = data.get("shift")
-#     date = data.get("date")
-
-#     if not emp_no or not shift or not date:
-#         raise HTTPException(status_code=400, detail="emp_no, shift, date required")
-
-#     # fetch employee details
-#     emp = await db["employees"].find_one({"emp_no": emp_no})
-#     if not emp:
-#         raise HTTPException(status_code=404, detail="Employee not found")
-
-#     name = emp["name"]
-
-#     # insert shift record
-#     doc = {
-#         "emp_no": emp_no,
-#         "name": name,         
-#         "shift": shift,
-#         "date": date,
-#         "updated_at": datetime.now(kolkata_tz),
-#         "updated_by": user["email"],
-#     }
-
-#     await db["shifts"].update_one(
-#         {"emp_no": emp_no, "date": date},  
-#         {"$set": doc},
-#         upsert=True
-#     )
-
-#     return {"message": f"Shift {shift} assigned to {name} ({emp_no}) on {date}"}
-
 @app.post("/shift")
 async def assign_shift(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
+    is_superadmin = user["role"] == "superadmin"
+    can_add_shift = user.get("permissions", {}).get("can_add_shift", False)
 
+    if not (is_superadmin or can_add_shift):
+        await auto_notify(request, user["email"], "attempted to assign shift")
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Fetch employee (emp_no or name)
     emp_no = data.get("emp_no")
-    name_query = data.get("name")
-    shift = data.get("shift")
     date = data.get("date")
+    shift = data.get("shift")
+    if not emp_no or not date or not shift:
+        raise HTTPException(status_code=400, detail="emp_no, date, and shift required")
 
-    if not shift or not date:
-        raise HTTPException(status_code=400, detail="shift and date required")
+    existing = await db["shifts"].find_one({"emp_no": emp_no, "date": date})
+    if existing and not is_superadmin:
+        await auto_notify(request, user["email"], f"attempted to edit shift for {emp_no} on {date}")
+        raise HTTPException(status_code=403, detail="Admins cannot edit existing shifts")
 
-    # ----- Step 1: Fetch employee -----
-    emp = None
-
-    # If emp_no provided
-    if emp_no:
-        # Clean float-style emp_no: "50709618284.0" -> "50709618284"
-        clean_no = str(emp_no).split(".")[0]
-
-        emp = await db["employees"].find_one({"emp_no": clean_no})
-        if not emp:
-            raise HTTPException(status_code=404, detail=f"Employee not found for emp_no {clean_no}")
-
-    # If name provided: fuzzy matching anywhere, case-insensitive
-    elif name_query:
-        cursor = db["employees"].find({
-            "name": {"$regex": name_query, "$options": "i"}
-        })
-
-        matches = await cursor.to_list(length=20)
-
-        if not matches:
-            raise HTTPException(status_code=404, detail=f"No employees found matching '{name_query}'")
-
-        if len(matches) > 1:
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "detail": "Multiple employees match this name",
-                    "matches": [
-                        {
-                            "emp_no": m["emp_no"],
-                            "name": m["name"],
-                            "designation": m.get("designation", "")
-                        }
-                        for m in matches
-                    ]
-                }
-            )
-
-        emp = matches[0]
-
-    else:
-        raise HTTPException(status_code=400, detail="Provide emp_no or name")
-
-    # Clean emp_no for consistency
-    cleaned_emp_no = str(emp["emp_no"]).split(".")[0]
-
-    # ----- Step 2: Insert/update shift -----
     doc = {
-        "emp_no": cleaned_emp_no,
-        "name": emp["name"],
-        "designation": emp.get("designation", ""),
+        "emp_no": emp_no,
         "shift": shift,
         "date": date,
-        "updated_at": datetime.now(kolkata_tz),
         "updated_by": user["email"],
+        "updated_at": datetime.now(kolkata_tz)
     }
 
-    await db["shifts"].update_one(
-        {"emp_no": cleaned_emp_no, "date": date},
-        {"$set": doc},
-        upsert=True
-    )
+    await db["shifts"].update_one({"emp_no": emp_no, "date": date}, {"$set": doc}, upsert=True)
 
-    return {
-        "message": f"Shift {shift} assigned to {emp['name']} ({cleaned_emp_no}) on {date}",
-        "shift_record": doc
-    }
+    if not is_superadmin:
+        await auto_notify(request, user["email"], f"added shift for {emp_no} on {date}")
+
+    return {"message": f"Shift assigned to {emp_no} on {date}"}
+
 
 # ===================================
 # ATTENDANCE
@@ -827,41 +777,32 @@ async def assign_shift(request: Request, data: dict):
 @app.post("/attendance")
 async def add_attendance(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
+    is_superadmin = user["role"] == "superadmin"
+    can_add_attendance = user.get("permissions", {}).get("can_add_attendance", False)
 
-    if user["role"] not in ["superadmin", "admin"]:
+    if not (is_superadmin or can_add_attendance):
+        await auto_notify(request, user["email"], "attempted to add attendance")
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    if user["role"] == "admin" and not user.get("permissions", {}).get("can_add_attendance", False):
-        await auto_notify(request, user["email"], "add attendance")
-        raise HTTPException(status_code=403, detail="Permission denied")
+    emp_no = str(data["emp_no"]).split(".")[0]
+    date = data["date"]
+    code = data["code"]
 
-    required = ["emp_no", "date", "code"]
-    if not all(k in data for k in required):
-        raise HTTPException(status_code=400, detail=f"Fields required: {required}")
+    existing = await db["attendance"].find_one({"emp_no": emp_no, f"attendance.{date}": {"$exists": True}})
+    if existing and not is_superadmin:
+        await auto_notify(request, user["email"], f"attempted to edit attendance for {emp_no} on {date}")
+        raise HTTPException(status_code=403, detail="Admins cannot edit existing attendance")
 
-    # ----- Fetch employee info -----
-    emp_no_clean = str(data["emp_no"]).split(".")[0]
-    emp = await db["employees"].find_one({"emp_no": emp_no_clean})
-    if not emp:
-        raise HTTPException(status_code=404, detail=f"Employee {data['emp_no']} not found")
-
-    date_obj = datetime.strptime(data["date"], "%Y-%m-%d")
-    month_str = date_obj.strftime("%Y-%m")
-    date_key = date_obj.strftime("%d-%m-%Y")
-
-    # Store attendance with extra info
     await db["attendance"].update_one(
-        {"emp_no": emp["emp_no"], "month": month_str},
-        {"$set": {
-            f"attendance.{date_key}": data["code"],  # <-- updated field name here
-            "emp_name": emp["name"],
-            "type": emp["type"],
-            "updated_by": user["email"]
-        }},
+        {"emp_no": emp_no},
+        {"$set": {f"attendance.{date}": code, "updated_by": user["email"], "updated_at": datetime.now(kolkata_tz)}},
         upsert=True
     )
 
-    return {"message": f"Attendance marked for {emp['emp_no']} - {emp['name']} on {data['date']}"}
+    if not is_superadmin:
+        await auto_notify(request, user["email"], f"added attendance for {emp_no} on {date}")
+
+    return {"message": f"Attendance marked for {emp_no} on {date}"}
 
 
 @app.post("/upload/attendance")
@@ -971,3 +912,104 @@ async def export_apprentice(month: str = "2025-07", request: Request = None, res
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=apprentice_attendance_{month}.xlsx"}
     )
+
+
+# ===================================
+# PERMISSIONS MANAGEMENT
+# ===================================
+
+# Default permissions template for admins
+DEFAULT_ADMIN_PERMISSIONS = {
+    "can_add_employee": False,
+    "can_edit_employee": False,
+    "can_delete_employee": False,
+    "can_add_shift": False,
+    "can_edit_shift": False,
+    "can_add_attendance": False,
+    "can_edit_attendance": False,
+    "can_upload_excel": False,
+    "can_manage_holidays": False,
+    "can_view_reports": False,
+}
+
+
+def get_permissions(user_doc: dict) -> dict:
+    return user_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
+
+def has_permission(user_doc: dict, key: str) -> bool:
+    return get_permissions(user_doc).get(key, False)
+
+def update_permissions(user_doc: dict, updates: dict) -> dict:
+    """
+    Programmatically update permissions in-memory (no DB write).
+    """
+    if "permissions" not in user_doc:
+        user_doc["permissions"] = DEFAULT_ADMIN_PERMISSIONS.copy()
+    for k, v in updates.items():
+        if k in DEFAULT_ADMIN_PERMISSIONS:
+            user_doc["permissions"][k] = bool(v)
+    return user_doc
+
+@app.get("/permissions/{admin_email}")
+async def get_admin_permissions(admin_email: str, request: Request):
+    user = await verify_session(request, sessions_collection)
+    if user["role"] != "superadmin":
+        await auto_notify(request, user["email"], f"attempted to view permissions of {admin_email}")
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    admin_doc = await collection.find_one({"email": admin_email, "role": "admin"})
+    if not admin_doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    return {"email": admin_email, "permissions": get_permissions(admin_doc)}
+
+
+@app.post("/permissions/{admin_email}")
+async def update_admin_permissions(admin_email: str, request: Request, data: dict):
+    user = await verify_session(request, sessions_collection)
+    if user["role"] != "superadmin":
+        await auto_notify(request, user["email"], f"attempted to edit permissions of {admin_email}")
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    admin_doc = await collection.find_one({"email": admin_email, "role": "admin"})
+    if not admin_doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    # Filter only valid permission keys
+    updates = {k: bool(v) for k, v in data.items() if k in DEFAULT_ADMIN_PERMISSIONS}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid permission keys provided")
+
+    # Update in DB
+    await collection.update_one({"email": admin_email}, {"$set": {"permissions": updates}})
+
+    # Notify the admin
+    notification = {
+        "title": "Permissions Updated",
+        "message": f"Your permissions have been updated by superadmin {user['email']}.",
+        "timestamp": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S"),
+        "status": "unread",
+        "expireAt": datetime.now(kolkata_tz) + timedelta(days=30)
+    }
+    await db["notifications"].insert_one(notification)
+
+    return {"message": f"Permissions updated for {admin_email}", "updated_permissions": updates}
+
+
+@app.get("/permissions")
+async def list_admins_permissions(request: Request):
+    user = await verify_session(request, sessions_collection)
+    if user["role"] != "superadmin":
+        await auto_notify(request, user["email"], "attempted to view all admins permissions")
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    cursor = collection.find({"role": "admin"})
+    admins = []
+    async for admin in cursor:
+        admins.append({
+            "email": admin["email"],
+            "name": admin.get("name", ""),
+            "permissions": get_permissions(admin)
+        })
+
+    return {"admins": admins, "count": len(admins)}
