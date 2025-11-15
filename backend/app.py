@@ -332,6 +332,7 @@ async def google_callback(request: Request, response: Response):
         "picture": user_info.get("picture", ""),
         "role": role,
         "updated_at": datetime.now(kolkata_tz),
+        "permissions": DEFAULT_ADMIN_PERMISSIONS.copy() if role == "admin" else None,
     }
 
     # --- Upsert user record in MongoDB ---
