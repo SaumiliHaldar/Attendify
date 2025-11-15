@@ -401,7 +401,14 @@ async def add_employee(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
 
     is_superadmin = user["role"] == "superadmin"
-    can_add_emp = user.get("permissions", {}).get("can_add_employee", False)
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    permissions = user.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
+
+
+    can_add_emp = permissions.get("can_add_employee", False)
 
     if not (is_superadmin or can_add_emp):
         await auto_notify(request, user["email"], "attempted to add employee")
@@ -422,9 +429,6 @@ async def add_employee(request: Request, data: dict):
         else:
             await db["employees"].update_one({"emp_no": emp_no}, {"$set": data})
             return {"message": f"Employee {emp_no} updated successfully"}
-
-    # Insert new employee
-    await db["employees"].insert_one(data)
     
     # Notify superadmins if added by admin
     if not is_superadmin:
@@ -999,17 +1003,7 @@ async def update_admin_permissions(admin_email: str, request: Request, data: dic
         {"$set": {"permissions": existing_permissions}}
     )
 
-    # Notify the admin
-    notification = {
-        "title": "Permissions Updated",
-        "message": f"Your permissions have been updated by superadmin {user['email']}.",
-        "timestamp": datetime.now(kolkata_tz).strftime("%d-%m-%Y %H:%M:%S"),
-        "status": "unread",
-        "expireAt": datetime.now(kolkata_tz) + timedelta(days=30)
-    }
-    await db["notifications"].insert_one(notification)
-
-    return {"message": f"Permissions updated for {admin_email}", "updated_permissions": updates}
+    return {"message": f"Permissions updated for {admin_email}", "updated_permissions": existing_permissions}
 
 
 @app.get("/permissions")

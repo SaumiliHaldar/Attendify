@@ -26,13 +26,17 @@ async def create_session(sessions_collection, user_email: str, device_info: str,
 
     if existing:
         expiry = existing.get("expiry")
+
+        # Fix tz-naive expiry coming from Mongo
         if expiry and expiry.tzinfo is None:
             expiry = expiry.replace(tzinfo=utc_tz)
 
+        # If expired → delete
         if expiry and expiry < now:
             await sessions_collection.delete_one({"_id": existing["_id"]})
             print(f"[SESSION] Expired & removed for {user_email}:{device_info[:40]}")
         else:
+            # Extend session
             new_expiry = now + SESSION_DURATION
             await sessions_collection.update_one(
                 {"_id": existing["_id"]},
@@ -43,9 +47,10 @@ async def create_session(sessions_collection, user_email: str, device_info: str,
 
     # Create new session
     session_id = secrets.token_hex(32)
+
     session_doc = {
         "session_id": session_id,
-        "data": user_data,
+        "data": user_data,  # contains email, role, permissions, etc.
         "device_info": device_info,
         "created_at": now,
         "last_accessed": now,
@@ -70,24 +75,26 @@ async def get_session(sessions_collection, session_id: str):
         return None
 
     now = datetime.now(utc_tz)
+
     expiry = session.get("expiry")
 
-    # Make expiry tz-aware if missing
+    # Fix Mongo tz naive fields
     if expiry and expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=utc_tz)
 
+    # Expired -> remove + return None
     if not expiry or expiry < now:
         await sessions_collection.delete_one({"_id": session["_id"]})
         print(f"[SESSION] Expired -> {session_id}")
         return None
 
-    # Refresh expiry
+    # Extend session expiry on access
     await sessions_collection.update_one(
         {"_id": session["_id"]},
         {"$set": {"expiry": now + SESSION_DURATION, "last_accessed": now}},
     )
 
-    return session["data"]
+    return session["data"]  # user_data (email, role, permissions)
 
 
 # ====================================
@@ -119,10 +126,19 @@ async def verify_session(request, sessions_collection):
     Verify Bearer token and return user data if valid.
     """
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid session token")
 
-    session_id = auth_header.split(" ")[1]
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
+
+    # Extract session_id from "Bearer <token>"
+    session_id = auth_header.split("Bearer")[-1].strip()
+
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Empty session token")
+
     session_data = await get_session(sessions_collection, session_id)
 
     if not session_data:
