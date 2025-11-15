@@ -10,7 +10,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from excelmaker import create_attendance_excel, REGULAR_LEGEND, APPRENTICE_LEGEND
-from sessions import create_session, get_session, delete_session, verify_session, cleanup_expired_sessions
+from sessions import create_session, get_session, delete_session, verify_session, cleanup_expired_sessions, DEFAULT_ADMIN_PERMISSIONS
 import pandas as pd
 import pytz
 from pytz import timezone
@@ -1070,22 +1070,6 @@ async def export_apprentice(month: str = "2025-07", request: Request = None, res
 # ===================================
 # PERMISSIONS MANAGEMENT
 # ===================================
-
-# Default permissions template for admins
-DEFAULT_ADMIN_PERMISSIONS = {
-    "can_add_employee": False,
-    "can_edit_employee": False,
-    "can_delete_employee": False,
-    "can_add_shift": False,
-    "can_edit_shift": False,
-    "can_add_attendance": False,
-    "can_edit_attendance": False,
-    "can_upload_excel": False,
-    "can_manage_holidays": False,
-    "can_view_reports": False,
-}
-
-
 def get_permissions(user_doc: dict) -> dict:
     return user_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
 

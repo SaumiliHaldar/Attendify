@@ -7,6 +7,21 @@ from fastapi import HTTPException
 kolkata_tz = pytz.timezone("Asia/Kolkata")
 utc_tz = pytz.UTC
 
+# Default permissions for admin role
+DEFAULT_ADMIN_PERMISSIONS = {
+    "can_add_employee": False,
+    "can_edit_employee": False,
+    "can_delete_employee": False,
+    "can_add_shift": False,
+    "can_edit_shift": False,
+    "can_add_attendance": False,
+    "can_edit_attendance": False,
+    "can_upload_excel": False,
+    "can_manage_holidays": False,
+    "can_view_reports": False,
+}
+
+
 # Session validity duration
 SESSION_DURATION = timedelta(days=7)
 
