@@ -141,6 +141,21 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_connections:
             active_connections.remove(websocket)
 
+
+async def get_user_with_permissions(session_id: str):
+    session_data = await get_session(sessions_collection, session_id)
+    if not session_data:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    user_doc = await collection.find_one({"email": session_data["email"]})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Ensure permissions is always a dict
+    permissions = user_doc.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
+    return user_doc, permissions
+
+
 # ===================================
 # Health + Index setup
 # ===================================
@@ -405,8 +420,7 @@ async def add_employee(request: Request, data: dict):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session")
 
-    permissions = user.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
-
+    permissions = user.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
 
     can_add_emp = permissions.get("can_add_employee", False)
 
@@ -418,21 +432,8 @@ async def add_employee(request: Request, data: dict):
     if not all(k in data for k in required_fields):
         raise HTTPException(status_code=400, detail=f"Missing fields: {required_fields}")
 
-    emp_no = str(data["emp_no"]).split(".")[0].strip()
-    
-    existing = await db["employees"].find_one({"emp_no": emp_no})
-    if existing:
-        if not is_superadmin:
-            # Admin cannot edit existing employees
-            await auto_notify(request, user["email"], f"attempted to edit employee {emp_no}")
-            raise HTTPException(status_code=403, detail="Admins cannot edit existing employees")
-        else:
-            await db["employees"].update_one({"emp_no": emp_no}, {"$set": data})
-            return {"message": f"Employee {emp_no} updated successfully"}
-    
-    # Notify superadmins if added by admin
-    if not is_superadmin:
-        await auto_notify(request, user["email"], f"added employee {emp_no}")
+    # Clean emp_no
+    data["emp_no"] = str(data["emp_no"]).split(".")[0]
 
     try:
         await db["employees"].insert_one(data)
@@ -446,34 +447,40 @@ async def add_employee(request: Request, data: dict):
     return {"message": f"Employee {data['name']} added successfully"}
 
 
-@app.post("/employees/manual")
-async def bulk_add_employees(request: Request, file: UploadFile = File(...)):
+@app.post("/upload/employees")
+async def upload_employees(request: Request, file: UploadFile = File(...)):
+    """
+    Upload employee Excel file (regular + apprentice attendance sheets) and merge into DB.
+    Only superadmin can perform this action.
+    """
+    # --- Superadmin check ---
     user = await verify_session(request, sessions_collection)
     if user["role"] != "superadmin":
-        await auto_notify(request, user["email"], "bulk upload employees")
+        await auto_notify(request, user["email"], "attempted to upload employees")
         raise HTTPException(status_code=403, detail="Only superadmin can upload employees")
 
-    df = pd.read_excel(file.file)
-    records = df.to_dict(orient="records")
-    await db["employees"].insert_many(records)
-    return {"message": f"{len(records)} employees uploaded successfully"}
+    # --- Load Excel ---
+    try:
+        df_excel = pd.ExcelFile(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading Excel file: {e}")
 
-@app.post("/upload/employees")
-async def load_employees_safe():
-    EMPLOYEE_SHEET = "ATTENDANCE SHEET MUSTER ROLL OF SSEE SW KGP.xlsx"
+    # --- Attendance sheets to process ---
     regular_sheets = [
-        "ATTENDANCE_SSEE_SW_KGP_I", 
-        "ATTENDANCE_SSEE_SW_KGP_II", 
+        "ATTENDANCE_SSEE_SW_KGP_I",
+        "ATTENDANCE_SSEE_SW_KGP_II",
         "ATTENDANCE_SSEE_SW_KGP_III"
     ]
     apprentice_sheet = "APPRENTICE ATTENDANCE"
 
     all_employees = []
 
-    # Process regular employees
+    # --- Process regular attendance sheets only ---
     for sheet in regular_sheets:
+        if sheet not in df_excel.sheet_names:
+            continue
         try:
-            df = pd.read_excel(EMPLOYEE_SHEET, sheet_name=sheet, skiprows=6)
+            df = df_excel.parse(sheet_name=sheet, skiprows=6)
             df.rename(columns={
                 "S. NO.": "S_No",
                 "NAME": "Name",
@@ -490,33 +497,35 @@ async def load_employees_safe():
                     "type": "regular"
                 })
         except Exception as e:
-            print(f"Error reading sheet {sheet}: {e}")
+            logger.warning(f"Error reading regular sheet {sheet}: {e}")
             continue
 
-    # Process apprentice employees
-    try:
-        df = pd.read_excel(EMPLOYEE_SHEET, sheet_name=apprentice_sheet, skiprows=8)
-        df.rename(columns={
-            "S. NO.": "S_No",
-            "NAME": "Name",
-            "DESIGNATION": "Designation",
-            "EMPLOYEE NO.": "Employee_No"
-        }, inplace=True)
-        df = df.dropna(subset=["Employee_No"])
+    # --- Process apprentice attendance sheet only ---
+    if apprentice_sheet in df_excel.sheet_names:
+        try:
+            df = df_excel.parse(sheet_name=apprentice_sheet, skiprows=8)
+            df.rename(columns={
+                "S. NO.": "S_No",
+                "NAME": "Name",
+                "DESIGNATION": "Designation",
+                "EMPLOYEE NO.": "Employee_No"
+            }, inplace=True)
+            df = df.dropna(subset=["Employee_No"])
 
-        for _, row in df.iterrows():
-            all_employees.append({
-                "emp_no": str(row["Employee_No"]).strip().split(".")[0].replace(" ", ""),
-                "name": str(row["Name"]).strip(),
-                "designation": str(row["Designation"]).strip(),
-                "type": "apprentice"
-            })
-    except Exception as e:
-        print(f"Error reading apprentice sheet: {e}")
+            for _, row in df.iterrows():
+                all_employees.append({
+                    "emp_no": str(row["Employee_No"]).strip().split(".")[0].replace(" ", ""),
+                    "name": str(row["Name"]).strip(),
+                    "designation": str(row["Designation"]).strip(),
+                    "type": "apprentice"
+                })
+        except Exception as e:
+            logger.warning(f"Error reading apprentice sheet: {e}")
 
     if not all_employees:
-        raise HTTPException(status_code=400, detail="No employee data found.")
+        raise HTTPException(status_code=400, detail="No employee data found in the attendance sheets.")
 
+    # --- Insert / Update DB ---
     emp_collection = db["employees"]
     added, updated, unchanged = 0, 0, 0
 
@@ -533,7 +542,7 @@ async def load_employees_safe():
             added += 1
 
     return {
-        "message": "Employee upload completed.",
+        "message": "Employee attendance upload completed.",
         "summary": {
             "added": added,
             "updated": updated,
@@ -542,6 +551,7 @@ async def load_employees_safe():
         },
         "total_processed": len(all_employees)
     }
+
 
 @app.delete("/employees/{emp_no}")
 async def delete_employee(emp_no: str, request: Request):
@@ -747,94 +757,9 @@ async def upload_holidays(request: Request, file: UploadFile = File(...)):
 # ===================================
 # SHIFTS
 # ===================================
-# @app.post("/shift")
-# async def assign_shift(request: Request, data: dict):
-#     user = await verify_session(request, sessions_collection)
-
-#     emp_no = data.get("emp_no")
-#     name_query = data.get("name")
-#     shift = data.get("shift")
-#     date = data.get("date")
-
-#     if not shift or not date:
-#         raise HTTPException(status_code=400, detail="shift and date required")
-
-#     # ----- Step 1: Fetch employee -----
-#     emp = None
-
-#     # If emp_no provided
-#     if emp_no:
-#         # Clean float-style emp_no: "50709618284.0" -> "50709618284"
-#         clean_no = str(emp_no).split(".")[0]
-
-#         emp = await db["employees"].find_one({"emp_no": clean_no})
-#         if not emp:
-#             raise HTTPException(status_code=404, detail=f"Employee not found for emp_no {clean_no}")
-
-#     # If name provided: fuzzy matching anywhere, case-insensitive
-#     elif name_query:
-#         cursor = db["employees"].find({
-#             "name": {"$regex": name_query, "$options": "i"}
-#         })
-
-#         matches = await cursor.to_list(length=20)
-
-#         if not matches:
-#             raise HTTPException(status_code=404, detail=f"No employees found matching '{name_query}'")
-
-#         if len(matches) > 1:
-#             return JSONResponse(
-#                 status_code=409,
-#                 content={
-#                     "detail": "Multiple employees match this name",
-#                     "matches": [
-#                         {
-#                             "emp_no": m["emp_no"],
-#                             "name": m["name"],
-#                             "designation": m.get("designation", "")
-#                         }
-#                         for m in matches
-#                     ]
-#                 }
-#             )
-
-#         emp = matches[0]
-
-#     else:
-#         raise HTTPException(status_code=400, detail="Provide emp_no or name")
-
-#     # Clean emp_no for consistency
-#     cleaned_emp_no = str(emp["emp_no"]).split(".")[0]
-
-#     # ----- Step 2: Insert/update shift -----
-#     doc = {
-#         "emp_no": cleaned_emp_no,
-#         "name": emp["name"],
-#         "designation": emp.get("designation", ""),
-#         "shift": shift,
-#         "date": date,
-#         "updated_at": datetime.now(kolkata_tz),
-#         "updated_by": user["email"],
-#     }
-
-#     await db["shifts"].update_one(
-#         {"emp_no": cleaned_emp_no, "date": date},
-#         {"$set": doc},
-#         upsert=True
-#     )
-
-#     return {
-#         "message": f"Shift {shift} assigned to {emp['name']} ({cleaned_emp_no}) on {date}",
-#         "shift_record": doc
-#     }
-
-
 @app.post("/shift")
 async def assign_shift(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
-
-    is_superadmin = user["role"] == "superadmin"
-    permissions = user.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
 
     emp_no = data.get("emp_no")
     name_query = data.get("name")
@@ -844,66 +769,64 @@ async def assign_shift(request: Request, data: dict):
     if not shift or not date:
         raise HTTPException(status_code=400, detail="shift and date required")
 
-    # ============================
-    # Permission Check
-    # ============================
-    # Check if shift already exists
-    existing_shift = None
-    if emp_no:
-        clean_no = str(emp_no).split(".")[0]
-        existing_shift = await db["shifts"].find_one({"emp_no": clean_no, "date": date})
-
-    if not is_superadmin:
-        if existing_shift:
-            # Editing existing shift
-            if not permissions.get("can_edit_shift", False):
-                await auto_notify(request, user["email"], f"attempted to edit shift for {clean_no} on {date}")
-                raise HTTPException(status_code=403, detail="Not authorized to edit shifts")
-        else:
-            # Adding new shift
-            if not permissions.get("can_add_shift", False):
-                await auto_notify(request, user["email"], f"attempted to add shift for {clean_no} on {date}")
-                raise HTTPException(status_code=403, detail="Not authorized to add shifts")
-
-    # =============================
-    # Employee Lookup (same as before)
-    # =============================
+    # ----- Step 1: Fetch employee -----
     emp = None
+
     if emp_no:
         clean_no = str(emp_no).split(".")[0]
         emp = await db["employees"].find_one({"emp_no": clean_no})
         if not emp:
-            raise HTTPException(status_code=404, detail=f"Employee not found: {clean_no}")
+            raise HTTPException(status_code=404, detail=f"Employee not found for emp_no {clean_no}")
 
     elif name_query:
-        cursor = db["employees"].find({"name": {"$regex": name_query, "$options": "i"}})
+        cursor = db["employees"].find({
+            "name": {"$regex": name_query, "$options": "i"}
+        })
         matches = await cursor.to_list(length=20)
 
         if not matches:
             raise HTTPException(status_code=404, detail=f"No employees found matching '{name_query}'")
+
         if len(matches) > 1:
             return JSONResponse(
                 status_code=409,
                 content={
                     "detail": "Multiple employees match this name",
                     "matches": [
-                        {"emp_no": m["emp_no"], "name": m["name"], "designation": m.get("designation", "")}
+                        {
+                            "emp_no": m["emp_no"],
+                            "name": m["name"],
+                            "designation": m.get("designation", "")
+                        }
                         for m in matches
                     ]
                 }
             )
 
         emp = matches[0]
-        clean_no = emp["emp_no"]
-
     else:
         raise HTTPException(status_code=400, detail="Provide emp_no or name")
 
-    # =============================
-    # Insert/update the shift
-    # =============================
+    cleaned_emp_no = str(emp["emp_no"]).split(".")[0]
+
+    # ----- Step 2: Check existing shift -----
+    existing_shift = await db["shifts"].find_one(
+        {"emp_no": cleaned_emp_no, "date": date}
+    )
+
+    # ❌ Admin cannot edit, only add
+    if user["role"] == "admin":
+        if not user.get("permissions", {}).get("can_add_shift", False):
+            await auto_notify(request, user["email"], "add shift")
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        if existing_shift:
+            await auto_notify(request, user["email"], "edit shift")
+            raise HTTPException(status_code=403, detail="Admins cannot edit shift")
+
+    # ----- Step 3: Upsert shift -----
     doc = {
-        "emp_no": clean_no,
+        "emp_no": cleaned_emp_no,
         "name": emp["name"],
         "designation": emp.get("designation", ""),
         "shift": shift,
@@ -913,14 +836,16 @@ async def assign_shift(request: Request, data: dict):
     }
 
     await db["shifts"].update_one(
-        {"emp_no": clean_no, "date": date},
+        {"emp_no": cleaned_emp_no, "date": date},
         {"$set": doc},
-        upsert=True,
+        upsert=True
     )
 
     return {
-        "message": f"Shift '{shift}' assigned to {emp['name']} ({clean_no}) on {date}",
-        "shift_record": doc,
+        "message": f"Shift {shift} assigned to {emp['name']} ({cleaned_emp_no}) on {date}",
+        "updated": existing_shift is not None,
+        "added": existing_shift is None,
+        "shift_record": doc
     }
 
 
@@ -930,110 +855,70 @@ async def assign_shift(request: Request, data: dict):
 @app.post("/attendance")
 async def add_attendance(request: Request, data: dict):
     user = await verify_session(request, sessions_collection)
-    is_superadmin = user["role"] == "superadmin"
-    can_add_attendance = user.get("permissions", {}).get("can_add_attendance", False)
 
-    if not (is_superadmin or can_add_attendance):
-        await auto_notify(request, user["email"], "attempted to add attendance")
+    # --- Role validation ---
+    if user["role"] not in ["superadmin", "admin"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    emp_no = str(data["emp_no"]).split(".")[0]
-    date = data["date"]
-    code = data["code"]
+    # --- Admin permission: can ADD but never EDIT ---
+    if user["role"] == "admin":
+        if not user.get("permissions", {}).get("can_add_attendance", False):
+            await auto_notify(request, user["email"], "add attendance")
+            raise HTTPException(status_code=403, detail="Permission denied")
 
-    existing = await db["attendance"].find_one({"emp_no": emp_no, f"attendance.{date}": {"$exists": True}})
-    if existing and not is_superadmin:
-        await auto_notify(request, user["email"], f"attempted to edit attendance for {emp_no} on {date}")
-        raise HTTPException(status_code=403, detail="Admins cannot edit existing attendance")
+    # --- Required fields ---
+    required = ["emp_no", "date", "code"]
+    if not all(k in data for k in required):
+        raise HTTPException(status_code=400, detail=f"Fields required: {required}")
 
+    emp_no_clean = str(data["emp_no"]).split(".")[0]
+    emp = await db["employees"].find_one({"emp_no": emp_no_clean})
+    if not emp:
+        raise HTTPException(status_code=404, detail=f"Employee {data['emp_no']} not found")
+
+    # --- Date formatting ---
+    date_obj = datetime.strptime(data["date"], "%Y-%m-%d")
+    month_str = date_obj.strftime("%Y-%m")
+    date_key = date_obj.strftime("%d-%m-%Y")
+
+    # --- Fetch existing record ---
+    existing = await db["attendance"].find_one(
+        {"emp_no": emp["emp_no"], "month": month_str}
+    )
+
+    # Admin cannot edit existing dates
+    if user["role"] == "admin" and existing and date_key in existing.get("attendance", {}):
+        await auto_notify(request, user["email"], "edit attendance")
+        raise HTTPException(status_code=403, detail="Admins cannot edit attendance")
+
+    # --- Build sorted attendance dictionary ---
+    attendance_map = existing.get("attendance", {}) if existing else {}
+    attendance_map[date_key] = data["code"]
+
+    # Sort dates
+    sorted_attendance = dict(sorted(
+        attendance_map.items(),
+        key=lambda x: datetime.strptime(x[0], "%d-%m-%Y")
+    ))
+
+    # --- Save to DB ---
     await db["attendance"].update_one(
-        {"emp_no": emp_no},
-        {"$set": {f"attendance.{date}": code, "updated_by": user["email"], "updated_at": datetime.now(kolkata_tz)}},
+        {"emp_no": emp["emp_no"], "month": month_str},
+        {"$set": {
+            "attendance": sorted_attendance,
+            "emp_name": emp["name"],
+            "type": emp["type"],
+            "updated_by": user["email"]
+        }},
         upsert=True
     )
 
-    if not is_superadmin:
-        await auto_notify(request, user["email"], f"added attendance for {emp_no} on {date}")
+    return {
+        "message": f"Attendance added for {emp['emp_no']} - {emp['name']} on {data['date']}",
+        "updated": existing is not None,
+        "added": existing is None
+    }
 
-    return {"message": f"Attendance marked for {emp_no} on {date}"}
-
-
-@app.post("/upload/attendance")
-async def upload_attendance_excel(request: Request, file: UploadFile = File(...)):
-    user = await verify_session(request, sessions_collection)
-    if user["role"] != "superadmin":
-        await auto_notify(request, user["email"], "upload attendance Excel")
-        raise HTTPException(status_code=403, detail="Only superadmin can upload attendance")
-
-    try:
-        df = pd.read_excel(file.file)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error reading Excel: {e}")
-
-    # Detect date columns dynamically (e.g., 1–31)
-    date_cols = [col for col in df.columns if str(col).strip().isdigit()]
-    base_cols = ["Emp No", "Name", "Designation", "Type"]
-
-    if not all(c in df.columns for c in base_cols):
-        raise HTTPException(status_code=400, detail=f"Excel missing base columns: {base_cols}")
-    if not date_cols:
-        raise HTTPException(status_code=400, detail="No day columns (1–31) found in Excel.")
-
-    inserted = 0
-    for _, row in df.iterrows():
-        emp_no = str(row["Emp No"]).strip()
-        if not emp_no:
-            continue
-
-        # Fetch employee from DB
-        emp = await db["employees"].find_one({"emp_no": emp_no})
-        if not emp:
-            continue  # skip if employee not found
-
-        emp_name = emp["name"]
-        emp_type = emp["type"]
-
-        # Determine month for attendance record
-        today = datetime.now(kolkata_tz)
-        if emp_type == "regular":
-            start_day = 11
-            start_month = today.month - 1 if today.month > 1 else 12
-            start_year = today.year if today.month > 1 else today.year - 1
-            month_str = f"{start_year}-{start_month:02d}"
-        else:
-            month_str = today.strftime("%Y-%m")
-
-        attendance = {}
-        for col in date_cols:
-            val = str(row[col]).strip() if not pd.isna(row[col]) else ""
-            if val:
-                try:
-                    day = int(col)
-                    if emp_type == "regular":
-                        date_obj = datetime(start_year, start_month, start_day, tzinfo=kolkata_tz) + timedelta(days=(day-1))
-                    else:
-                        date_obj = datetime(today.year, today.month, day, tzinfo=kolkata_tz)
-                    attendance[date_obj.strftime("%d-%m-%Y")] = val
-                except Exception:
-                    continue
-
-        if not attendance:
-            continue
-
-        await db["attendance"].update_one(
-            {"emp_no": emp_no, "month": month_str},
-            {"$set": {
-                "emp_name": emp_name,
-                "type": emp_type,
-                "attendance": attendance,
-                "updated_by": user["email"],
-                "uploaded_at": datetime.now(kolkata_tz)
-            }},
-            upsert=True
-        )
-        inserted += 1
-
-    return {"message": f"Attendance uploaded successfully for {inserted} employees."}
 
 # ===================================
 # EXPORT ATTENDANCE EXCEL
