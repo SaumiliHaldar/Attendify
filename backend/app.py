@@ -152,8 +152,24 @@ async def get_user_with_permissions(session_id: str):
         raise HTTPException(status_code=401, detail="User not found")
 
     # Ensure permissions is always a dict
-    permissions = user_doc.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
+    permissions = None if user_doc["role"] == "superadmin" else (user_doc.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy())
     return user_doc, permissions
+
+
+# Fetch logged-in user info
+@app.get("/auth/me")
+async def get_logged_in_user(request: Request):
+    user = await verify_session(request, sessions_collection)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return {
+        "email": user["email"],
+        "name": user["name"],
+        "picture": user["picture"],
+        "role": user["role"],
+        "permissions": None if user["role"] == "superadmin" else user.get("permissions", {})
+    }
 
 
 # ===================================
@@ -287,6 +303,7 @@ async def login_with_google():
         "&prompt=consent"
     )
     return RedirectResponse(url=google_auth_url)
+
 @app.get("/auth/google/callback")
 async def google_callback(request: Request, response: Response):
     """Handle Google OAuth callback: exchange code for token, fetch user, create session."""
@@ -370,29 +387,12 @@ async def google_callback(request: Request, response: Response):
         logger.error(f"[SESSION] Creation failed: {e}")
         raise HTTPException(status_code=500, detail="Session creation failed")
 
-    # --- Set secure cookie ---
-    response.set_cookie(
-        key="session_id",
-        value=session_id,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=7 * 24 * 3600,  # 7 days
-    )
-
     # --- Redirect to frontend with session info ---
     if not FRONTEND_URL:
         raise HTTPException(status_code=500, detail="FRONTEND_URL not configured")
 
-    params = {
-        "session_id": session_id,
-        "email": user_email,
-        "name": user_info.get("name", ""),
-        "picture": user_info.get("picture", ""),
-        "role": role,
-    }
+    redirect_url = f"{FRONTEND_URL}"
 
-    redirect_url = f"{FRONTEND_URL}/?{urlencode(params)}"
     logger.info(f"[LOGIN] Redirecting {user_email} to frontend")
 
     return RedirectResponse(url=redirect_url)
@@ -956,21 +956,29 @@ async def export_apprentice(month: str = "2025-07", request: Request = None, res
 # PERMISSIONS MANAGEMENT
 # ===================================
 def get_permissions(user_doc: dict) -> dict:
-    return user_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
+    if user_doc["role"] == "superadmin":
+        return None
+    return user_doc.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
 
 def has_permission(user_doc: dict, key: str) -> bool:
-    return get_permissions(user_doc).get(key, False)
+    if user_doc.get("role") == "superadmin":
+        return True
 
-def update_permissions(user_doc: dict, updates: dict) -> dict:
-    """
-    Programmatically update permissions in-memory (no DB write).
-    """
-    if "permissions" not in user_doc:
-        user_doc["permissions"] = DEFAULT_ADMIN_PERMISSIONS.copy()
+    perms = get_permissions(user_doc)
+    return perms.get(key, False)
+
+def update_permissions(user_doc: dict, updates: dict):
+    if user_doc.get("role") == "superadmin":
+        raise ValueError("Cannot update permissions for superadmin")
+
+    perms = get_permissions(user_doc)
     for k, v in updates.items():
         if k in DEFAULT_ADMIN_PERMISSIONS:
-            user_doc["permissions"][k] = bool(v)
+            perms[k] = bool(v)
+
+    user_doc["permissions"] = perms
     return user_doc
+
 
 @app.get("/permissions/{admin_email}")
 async def get_admin_permissions(admin_email: str, request: Request):
@@ -979,11 +987,23 @@ async def get_admin_permissions(admin_email: str, request: Request):
         await auto_notify(request, user["email"], f"attempted to view permissions of {admin_email}")
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    admin_doc = await collection.find_one({"email": admin_email, "role": "admin"})
+    admin_doc = await collection.find_one({"email": admin_email})
     if not admin_doc:
-        raise HTTPException(status_code=404, detail="Admin not found")
+        raise HTTPException(status_code=404, detail="User not found")
 
-    return {"email": admin_email, "permissions": get_permissions(admin_doc)}
+    # Superadmin → ignore permissions field
+    if admin_doc["role"] == "superadmin":
+        return {
+            "email": admin_doc["email"],
+            "name": admin_doc.get("name", ""),
+            "role": "superadmin",
+            "permissions": "ALL"
+        }
+
+    return {
+        "email": admin_email,
+        "permissions": get_permissions(admin_doc)
+    }
 
 
 @app.post("/permissions/{admin_email}")
@@ -993,41 +1013,47 @@ async def update_admin_permissions(admin_email: str, request: Request, data: dic
         await auto_notify(request, user["email"], f"attempted to edit permissions of {admin_email}")
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    admin_doc = await collection.find_one({"email": admin_email, "role": "admin"})
-    if not admin_doc:
-        raise HTTPException(status_code=404, detail="Admin not found")
+    target = await collection.find_one({"email": admin_email})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    # Fetch existing permissions
-    existing_permissions = admin_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
+    if target["role"] == "superadmin":
+        raise HTTPException(status_code=400, detail="Cannot modify superadmin permissions")
 
-    # Update only the keys provided
+    perms = get_permissions(target)
+
     for k, v in data.items():
         if k in DEFAULT_ADMIN_PERMISSIONS:
-            existing_permissions[k] = bool(v)
+            perms[k] = bool(v)
 
-    # Write back merged permissions
     await collection.update_one(
         {"email": admin_email},
-        {"$set": {"permissions": existing_permissions}}
+        {"$set": {"permissions": perms}}
     )
 
-    return {"message": f"Permissions updated for {admin_email}", "updated_permissions": existing_permissions}
+    return {"message": f"Permissions updated for {admin_email}", "updated_permissions": perms}
 
 
 @app.get("/permissions")
 async def list_admins_permissions(request: Request):
     user = await verify_session(request, sessions_collection)
+
     if user["role"] != "superadmin":
         await auto_notify(request, user["email"], "attempted to view all admins permissions")
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    # Fetch ONLY admins
     cursor = collection.find({"role": "admin"})
     admins = []
+
     async for admin in cursor:
+        perms = admin.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
+
         admins.append({
             "email": admin["email"],
             "name": admin.get("name", ""),
-            "permissions": get_permissions(admin)
+            "role": "admin",
+            "permissions": perms
         })
 
     return {"admins": admins, "count": len(admins)}
