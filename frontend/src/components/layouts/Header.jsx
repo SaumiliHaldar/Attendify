@@ -31,27 +31,32 @@ export default function Header() {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-  // Parse query params or load from localStorage
+  // Parse query params to check for auth status
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const email = params.get("email");
-      const name = params.get("name");
-      const picture = params.get("picture");
-      const role = params.get("role");
+  async function fetchUser() {
+    try {
+      const res = await fetch(`${API_URL}/auth/me`, {
+        credentials: "include", // important for cookies/session
+      });
 
-      if (email) {
-        setUser({ email, name, picture, role });
-        localStorage.setItem(
-          "user",
-          JSON.stringify({ email, name, picture, role })
-        );
+      if (res.ok) {
+        const userData = await res.json();
+        setUser(userData);
+        localStorage.setItem("user", JSON.stringify(userData));
       } else {
-        const saved = localStorage.getItem("user");
-        if (saved) setUser(JSON.parse(saved));
+        // Not authenticated, clear any stored user
+        setUser(null);
+        localStorage.removeItem("user");
       }
+    } catch (err) {
+      console.error("Failed to fetch user info:", err);
+      setUser(null);
     }
-  }, []);
+  }
+
+  fetchUser();
+}, []);
+
 
   // Close dropdowns when clicking outside
   useEffect(() => {
