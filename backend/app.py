@@ -310,7 +310,6 @@ async def google_callback(request: Request, response: Response):
     code = request.query_params.get("code")
     error = request.query_params.get("error")
 
-    # --- Error handling ---
     if error:
         if error == "access_denied":
             raise HTTPException(status_code=400, detail="User denied access")
@@ -318,7 +317,7 @@ async def google_callback(request: Request, response: Response):
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
 
-    # --- Exchange authorization code for tokens ---
+    # --- Exchange code for tokens ---
     token_url = "https://oauth2.googleapis.com/token"
     token_data = {
         "code": code,
@@ -328,31 +327,23 @@ async def google_callback(request: Request, response: Response):
         "grant_type": "authorization_code",
     }
 
-    try:
-        async with httpx.AsyncClient() as client_http:
-            token_response = await client_http.post(token_url, data=token_data)
-            token_response.raise_for_status()
-            token_json = token_response.json()
-    except httpx.HTTPError as e:
-        logger.error(f"[OAUTH] Token exchange failed: {e}")
-        raise HTTPException(status_code=500, detail="Google authentication failed")
+    async with httpx.AsyncClient() as client_http:
+        token_response = await client_http.post(token_url, data=token_data)
+        token_response.raise_for_status()
+        token_json = token_response.json()
 
     access_token = token_json.get("access_token")
     if not access_token:
         raise HTTPException(status_code=500, detail="No access token received")
 
-    # --- Get user info from Google ---
-    try:
-        async with httpx.AsyncClient() as client_http:
-            userinfo_response = await client_http.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            userinfo_response.raise_for_status()
-            user_info = userinfo_response.json()
-    except httpx.HTTPError as e:
-        logger.error(f"[OAUTH] Userinfo fetch failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch user info")
+    # --- Get user info ---
+    async with httpx.AsyncClient() as client_http:
+        userinfo_response = await client_http.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        userinfo_response.raise_for_status()
+        user_info = userinfo_response.json()
 
     user_email = user_info["email"]
     role = "superadmin" if user_email in SUPERADMINS else "admin"
@@ -367,34 +358,31 @@ async def google_callback(request: Request, response: Response):
         "permissions": DEFAULT_ADMIN_PERMISSIONS.copy() if role == "admin" else None,
     }
 
-    # --- Upsert user record in MongoDB ---
-    try:
-        await collection.update_one(
-            {"email": user_email},
-            {"$set": user_data, "$setOnInsert": {"created_at": datetime.now(kolkata_tz)}},
-            upsert=True
-        )
-        logger.info(f"[USER] Logged in: {user_email} ({role})")
-    except Exception as e:
-        logger.error(f"[MongoDB] User save failed: {e}")
-        raise HTTPException(status_code=500, detail="User database update failed")
+    # --- Upsert user in DB ---
+    await collection.update_one(
+        {"email": user_email},
+        {"$set": user_data, "$setOnInsert": {"created_at": datetime.now(kolkata_tz)}},
+        upsert=True
+    )
 
-    # --- Create or reuse session ---
-    try:
-        device_info = request.headers.get("user-agent", "unknown")
-        session_id = await create_session(sessions_collection, user_email, device_info, user_data)
-    except Exception as e:
-        logger.error(f"[SESSION] Creation failed: {e}")
-        raise HTTPException(status_code=500, detail="Session creation failed")
+    # --- Create session ---
+    device_info = request.headers.get("user-agent", "unknown")
+    session_id = await create_session(sessions_collection, user_email, device_info, user_data)
 
-    # --- Redirect to frontend with session info ---
+    # --- Set session cookie ---
+    response.set_cookie(
+        key="session_id",
+        value=session_id,
+        httponly=True,    # JS cannot read (more secure)
+        secure=True,      # only HTTPS
+        max_age=7*24*3600 # 7 days
+    )
+
+    # --- Redirect to frontend ---
     if not FRONTEND_URL:
         raise HTTPException(status_code=500, detail="FRONTEND_URL not configured")
 
-    redirect_url = f"{FRONTEND_URL}"
-
-    logger.info(f"[LOGIN] Redirecting {user_email} to frontend")
-
+    redirect_url = FRONTEND_URL
     return RedirectResponse(url=redirect_url)
 
 @app.post("/logout")
