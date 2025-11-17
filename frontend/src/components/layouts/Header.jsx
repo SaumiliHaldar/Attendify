@@ -33,29 +33,35 @@ export default function Header() {
 
   // Parse query params to check for auth status
   useEffect(() => {
-  async function fetchUser() {
-    try {
-      const res = await fetch(`${API_URL}/auth/me`, {
-        credentials: "include", // important for cookies/session
-      });
+    async function fetchUser() {
+      try {
+        const res = await fetch(`${API_URL}/auth/me`, {
+          method: "GET",
+          credentials: "include",   // REQUIRED FOR COOKIE SESSION
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
 
-      if (res.ok) {
-        const userData = await res.json();
-        setUser(userData);
-        localStorage.setItem("user", JSON.stringify(userData));
-      } else {
-        // Not authenticated, clear any stored user
+        if (res.ok) {
+          const userData = await res.json();
+          setUser(userData);
+          localStorage.setItem("user", JSON.stringify(userData));
+        } else {
+          setUser(null);
+          localStorage.removeItem("user");
+        }
+      } catch (err) {
+        console.error("Failed to fetch user info:", err);
         setUser(null);
-        localStorage.removeItem("user");
       }
-    } catch (err) {
-      console.error("Failed to fetch user info:", err);
-      setUser(null);
     }
-  }
 
-  fetchUser();
-}, []);
+    // Runs only after mount (cookie available)
+    if (typeof window !== "undefined") {
+      fetchUser();
+    }
+  }, []);
 
 
   // Close dropdowns when clicking outside
@@ -175,11 +181,10 @@ export default function Header() {
                         {notifications.map((notif) => (
                           <li
                             key={notif._id}
-                            className={`p-2 rounded-md ${
-                              notif.status === "unread"
+                            className={`p-2 rounded-md ${notif.status === "unread"
                                 ? "bg-green-50 dark:bg-green-900/20"
                                 : "bg-neutral-50 dark:bg-neutral-800"
-                            }`}
+                              }`}
                           >
                             <p className="text-sm">{notif.message}</p>
                             <div className="flex justify-between items-center mt-1">
@@ -323,11 +328,10 @@ export default function Header() {
                                 {notifications.map((notif) => (
                                   <li
                                     key={notif._id}
-                                    className={`p-2 rounded-md ${
-                                      notif.status === "unread"
+                                    className={`p-2 rounded-md ${notif.status === "unread"
                                         ? "bg-green-50 dark:bg-green-900/20"
                                         : "bg-neutral-50 dark:bg-neutral-800"
-                                    }`}
+                                      }`}
                                   >
                                     <p className="text-sm">{notif.message}</p>
                                     <div className="flex justify-between items-center mt-1">
