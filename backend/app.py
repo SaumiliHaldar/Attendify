@@ -159,16 +159,29 @@ async def get_user_with_permissions(session_id: str):
 # Fetch logged-in user info
 @app.get("/auth/me")
 async def get_logged_in_user(request: Request):
-    user = await verify_session(request, sessions_collection)
-    if not user:
+    # Get session_id from cookie
+    session_id = request.cookies.get("session_id")
+    if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    # Fetch session from DB
+    session_doc = await sessions_collection.find_one({"session_id": session_id})
+    if not session_doc:
+        raise HTTPException(status_code=401, detail="Invalid session or expired")
+
+    # Fetch corresponding user from users collection
+    user_doc = await collection.find_one({"email": session_doc["data"]["email"]})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prepare response
+    permissions = None if user_doc["role"] == "superadmin" else user_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
     return {
-        "email": user["email"],
-        "name": user["name"],
-        "picture": user["picture"],
-        "role": user["role"],
-        "permissions": None if user["role"] == "superadmin" else user.get("permissions", {})
+        "email": user_doc["email"],
+        "name": user_doc.get("name", ""),
+        "picture": user_doc.get("picture", ""),
+        "role": user_doc.get("role", ""),
+        "permissions": permissions
     }
 
 
