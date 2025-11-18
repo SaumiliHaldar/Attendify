@@ -417,7 +417,7 @@ async def google_callback(request: Request):
         value=session_id,
         httponly=True,       # cannot be accessed by JS
         secure=True,         # HTTPS only (set False if testing locally)
-        samesite="lax",      # adjust to 'none' if cross-site with HTTPS
+        samesite="none",      # adjust to 'none' if cross-site with HTTPS
         max_age=7*24*3600    # 1 week
     )
 
