@@ -170,7 +170,7 @@ async def get_logged_in_user(request: Request):
         raise HTTPException(status_code=401, detail="Invalid session or expired")
 
     # Fetch corresponding user from users collection
-    user_doc = await collection.find_one({"email": session_doc["data"]["email"]})
+    user_doc = await collection.find_one({"email": session_doc["email"]})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User not found")
 
