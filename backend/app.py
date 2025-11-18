@@ -167,20 +167,27 @@ async def get_logged_in_user(request: Request):
     # Fetch session from DB
     session_doc = await sessions_collection.find_one({"session_id": session_id})
     if not session_doc:
-        raise HTTPException(status_code=401, detail="Invalid session or expired")
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    # Fetch corresponding user from users collection
-    user_doc = await collection.find_one({"email": session_doc["email"]})
+    # MUST read session_doc["email"], NOT session_doc["data"]["email"]
+    email = session_doc.get("email")
+    if not email:
+        raise HTTPException(status_code=500, detail="Session missing email")
+
+    user_doc = await collection.find_one({"email": email})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Prepare response
-    permissions = None if user_doc["role"] == "superadmin" else user_doc.get("permissions", DEFAULT_ADMIN_PERMISSIONS.copy())
+    permissions = (
+        None if user_doc.get("role") == "superadmin"
+        else user_doc.get("permissions")
+    )
+
     return {
         "email": user_doc["email"],
-        "name": user_doc.get("name", ""),
-        "picture": user_doc.get("picture", ""),
-        "role": user_doc.get("role", ""),
+        "name": user_doc.get("name"),
+        "picture": user_doc.get("picture"),
+        "role": user_doc.get("role"),
         "permissions": permissions
     }
 
