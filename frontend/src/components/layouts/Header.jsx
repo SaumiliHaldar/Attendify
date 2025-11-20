@@ -28,39 +28,63 @@ export default function Header() {
   const [notifications, setNotifications] = useState([]);
   const dropdownRef = useRef(null);
   const notifRef = useRef(null);
+  const hasAttemptedFetch = useRef(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-  // Parse query params to check for auth status
-  useEffect(() => {
-    async function fetchUser() {
-      try {
-        const res = await fetch(`${API_URL}/auth/me`, {
-          method: "GET",
-          credentials: "include",   // REQUIRED FOR COOKIE SESSION
-          headers: {
-            "Content-Type": "application/json"
-          }
-        });
-
-        if (res.ok) {
-          const userData = await res.json();
-          setUser(userData);
-          localStorage.setItem("user", JSON.stringify(userData));
-        } else {
-          setUser(null);
-          localStorage.removeItem("user");
+  // Fetch user from backend
+  const fetchUser = async () => {
+    try { 
+      const res = await fetch(`${API_URL}/auth/me`, {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json"
         }
-      } catch (err) {
-        console.error("Failed to fetch user info:", err);
+      });
+
+      if (res.ok) {
+        const userData = await res.json();
+        setUser(userData);
+        localStorage.setItem("user", JSON.stringify(userData));
+      } else {
         setUser(null);
+        localStorage.removeItem("user");
+      }
+    } catch (err) {
+      console.error("Failed to fetch user info:", err);
+      setUser(null);
+      localStorage.removeItem("user");
+    }
+  };
+
+  // Load user on mount AND when window regains focus (after OAuth redirect)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Try loading from localStorage first for instant UI
+    const cachedUser = localStorage.getItem("user");
+    if (cachedUser) {
+      try {
+        setUser(JSON.parse(cachedUser));
+      } catch (e) {
+        console.error("Failed to parse cached user:", e);
       }
     }
 
-    // Runs only after mount (cookie available)
-    if (typeof window !== "undefined") {
-      fetchUser();
-    }
+    // Always fetch fresh data from backend
+    fetchUser();
+    hasAttemptedFetch.current = true;
+
+    // Re-fetch when user returns to tab (after OAuth)
+    const handleFocus = () => {
+      if (hasAttemptedFetch.current) {
+        fetchUser();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
 
@@ -88,7 +112,7 @@ export default function Header() {
     }
   }, [notifOpen, user]);
 
-  // WebSocket for realtime notifications with secure WSS handling
+  // WebSocket for realtime notifications
   useEffect(() => {
     if (user?.role === "superadmin") {
       let wsUrl;
@@ -137,11 +161,22 @@ export default function Header() {
   };
 
   // Logout function
-  const handleLogout = () => {
-    localStorage.removeItem("user");
-    setUser(null);
-    setDropdownOpen(false);
-    window.location.href = "/";
+  const handleLogout = async () => {
+    try {
+      // Call backend logout endpoint
+      await fetch(`${API_URL}/logout`, {
+        method: "POST",
+        credentials: "include"
+      });
+    } catch (e) {
+      console.error("Logout error:", e);
+    } finally {
+      // Clear local state regardless
+      localStorage.removeItem("user");
+      setUser(null);
+      setDropdownOpen(false);
+      window.location.href = "/";
+    }
   };
 
   return (
