@@ -105,32 +105,41 @@ async def cleanup_expired_sessions(sessions_collection):
 # ====================================
 async def verify_session(request, sessions_collection):
     """
-    Verify session from Authorization header only.
-    Returns user_data dict if valid.
+    Verify session from:
+    - Authorization: Bearer <token>
+    - OR session_id cookie
     """
+
+    session_id = None
+
+    # 1. Check Authorization header
     auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    if auth_header and auth_header.startswith("Bearer "):
+        session_id = auth_header.split("Bearer ")[1].strip()
 
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
-
-    session_id = auth_header.split("Bearer ")[1].strip()
+    # 2. If no header token → check cookie
     if not session_id:
-        raise HTTPException(status_code=401, detail="Empty session token")
+        session_id = request.cookies.get("session_id")
 
+    # 3. No token at all
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Missing session token")
+
+    # 4. Validate session in DB
     session_data = await get_session(sessions_collection, session_id)
     if not session_data:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    # --- always get latest user record ---
-    from app import collection  # same Mongo users collection
-
+    # 5. Load latest user record
+    from app import collection  # Same Mongo users collection
     user_doc = await collection.find_one({"email": session_data["email"]})
+
     if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # merge fresh permissions with session data
-    session_data["permissions"] = user_doc.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
+    # Always merge fresh permissions
+    session_data["permissions"] = (
+        user_doc.get("permissions") or DEFAULT_ADMIN_PERMISSIONS.copy()
+    )
 
     return session_data
