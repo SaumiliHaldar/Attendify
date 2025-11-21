@@ -33,8 +33,7 @@ import {
   TableHeader,
   TableRow,
   TableCell,
-}
- from "@/components/ui/table";
+} from "@/components/ui/table";
 import { Users, Upload, Plus, Loader2 } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
@@ -73,42 +72,41 @@ export default function Employees() {
   const fetchEmployees = async () => {
     // Check for user existence instead of token
     if (!user) {
-        setLoading(false);
-        return;
-    } 
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        skip: (page * limit).toString(),
-        limit: limit.toString(),
+        skip: String(page * limit),
+        limit: String(limit),
+        search: search.trim().toLowerCase(),
+        emp_type: empType === "all" ? "" : empType.toLowerCase(),
       });
 
-      if (search.trim()) {
-        params.append("search", search.trim());
-      }
-
-      if (empType !== "all") {
-        params.append("emp_type", empType);
-      }
 
       const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
-        credentials: "include", 
+        credentials: "include",
       });
-      
+
       const data = await res.json();
 
       if (res.ok) {
-        setEmployees(data.employees || []);
+        setEmployees(
+          [...(data.employees || [])].sort((a, b) =>
+            a.emp_no.localeCompare(b.emp_no, undefined, { numeric: true })
+          )
+        );
+
         setTotal(data.pagination?.total || 0);
       } else {
-        // If 403 (Forbidden/Session Expired), clear local user data
         if (res.status === 403) {
-            localStorage.removeItem("user");
-            setUser(null);
-            toast.error("Session expired. Please log in again.");
+          localStorage.removeItem("user");
+          setUser(null);
+          toast.error("Session expired. Please log in again.");
         } else {
-            toast.error(data.detail || "Failed to fetch employees");
+          toast.error(data.detail || "Failed to fetch employees");
         }
       }
     } catch (err) {
@@ -119,12 +117,10 @@ export default function Employees() {
     }
   };
 
+  // Fetch employees whenever page, type, search, or user changes
   useEffect(() => {
-    // Fetch when user state changes (from initial load or login) or pagination/filter changes.
-    if (user) { 
-      fetchEmployees();
-    }
-  }, [page, empType, user, API_URL]);
+    if (user) fetchEmployees();
+  }, [page, empType, user, search]); // FIXED
 
   // Add Employee
   const handleAddEmployee = async () => {
@@ -136,15 +132,13 @@ export default function Employees() {
     try {
       const res = await fetch(`${API_URL}/employees/manual`, {
         method: "POST",
-        credentials: "include", // Ensure cookie is sent
-        headers: {
-          "Content-Type": "application/json",
-        },
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
 
       const data = await res.json();
-      
+
       if (res.ok) {
         toast.success(data.message || "Employee added successfully!");
         setAddOpen(false);
@@ -172,7 +166,7 @@ export default function Employees() {
 
       const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
-        credentials: "include", // Ensure cookie is sent
+        credentials: "include",
         body: formData,
       });
 
@@ -196,11 +190,10 @@ export default function Employees() {
       setLoading(false);
     }
   };
-  
-  // Refactored Search Button to call fetchEmployees directly.
+
+  // Search button
   const handleSearch = () => {
-    setPage(0);
-    fetchEmployees();
+    setPage(0); // useEffect will fetch automatically
   };
 
   return (
@@ -243,6 +236,7 @@ export default function Employees() {
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+
                   {/* Upload */}
                   <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
                     <DialogTrigger asChild>
@@ -258,9 +252,10 @@ export default function Employees() {
                         <Input
                           type="file"
                           accept=".xlsx"
-                          onChange={(e) =>
-                            setFile(e.target.files ? e.target.files[0] : null)
-                          }
+                          onChange={(e) => {
+                            const selected = e.target.files?.[0];
+                            setFile(selected || null); // FIXED
+                          }}
                         />
                         <Button onClick={handleUpload} disabled={loading}>
                           {loading ? (
@@ -280,6 +275,7 @@ export default function Employees() {
                         <Plus className="w-4 h-4" /> Add
                       </Button>
                     </DialogTrigger>
+
                     <DialogContent>
                       <DialogHeader>
                         <DialogTitle>Add New Employee</DialogTitle>
@@ -316,6 +312,7 @@ export default function Employees() {
                           <option value="regular">Regular</option>
                           <option value="apprentice">Apprentice</option>
                         </select>
+
                         <Button onClick={handleAddEmployee} disabled={loading}>
                           {loading ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -330,7 +327,7 @@ export default function Employees() {
               </CardHeader>
             </Card>
 
-            {/* Table Card - MUST be flex-1 to take up remaining vertical space */}
+            {/* Table */}
             <Card className="flex-1 flex flex-col overflow-hidden w-full">
               <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 flex-shrink-0">
                 <div className="flex flex-wrap gap-2 w-full">
@@ -338,17 +335,22 @@ export default function Employees() {
                     placeholder="Search by name, number, or designation..."
                     className="flex-1 min-w-[200px]"
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => {
+                      setSearch(e.target.value);
+                      setPage(0); // FIXED — search resets pagination
+                    }}
                     onKeyPress={(e) => {
-                      if (e.key === 'Enter') {
-                        handleSearch();
-                      }
+                      if (e.key === "Enter") handleSearch();
                     }}
                   />
-                  <Select value={empType} onValueChange={(val) => {
-                    setEmpType(val);
-                    setPage(0);
-                  }}>
+
+                  <Select
+                    value={empType}
+                    onValueChange={(val) => {
+                      setEmpType(val);
+                      setPage(0);
+                    }}
+                  >
                     <SelectTrigger className="w-full sm:w-[180px]">
                       <SelectValue placeholder="All" />
                     </SelectTrigger>
@@ -358,16 +360,14 @@ export default function Employees() {
                       <SelectItem value="apprentice">Apprentice</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button 
-                    onClick={handleSearch}
-                    variant="outline"
-                  >
+
+                  <Button onClick={handleSearch} variant="outline">
                     Search
                   </Button>
                 </div>
               </CardHeader>
 
-              {/* Table Content - MUST use overflow-y-auto to allow scrolling within the card */}
+              {/* Table Content */}
               <CardContent className="flex-1 overflow-y-auto p-0">
                 {loading ? (
                   <div className="flex justify-center items-center h-full min-h-[10rem]">
@@ -386,9 +386,9 @@ export default function Employees() {
                           <TableHead>Name</TableHead>
                           <TableHead>Designation</TableHead>
                           <TableHead>Type</TableHead>
-                          <TableHead>Created At</TableHead>
                         </TableRow>
                       </TableHeader>
+
                       <TableBody>
                         {employees.map((emp, idx) => (
                           <motion.tr
@@ -405,13 +405,6 @@ export default function Employees() {
                             <TableCell className="capitalize">
                               {emp.type}
                             </TableCell>
-                            <TableCell>
-                              {emp.created_at
-                                ? new Date(emp.created_at).toLocaleDateString(
-                                      "en-IN"
-                                    )
-                                : "-"}
-                            </TableCell>
                           </motion.tr>
                         ))}
                       </TableBody>
@@ -423,7 +416,8 @@ export default function Employees() {
               {/* Pagination (Fixed Height) */}
               <div className="flex flex-col sm:flex-row justify-between items-center gap-2 p-4 border-t bg-gray-50 flex-shrink-0">
                 <div className="text-sm text-gray-600">
-                  Showing {page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total}
+                  Showing {page * limit + 1}–
+                  {Math.min((page + 1) * limit, total)} of {total}
                 </div>
                 <div className="flex gap-2">
                   <Button
@@ -434,6 +428,7 @@ export default function Employees() {
                   >
                     Previous
                   </Button>
+
                   <Button
                     variant="outline"
                     size="sm"

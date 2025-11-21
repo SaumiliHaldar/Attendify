@@ -78,7 +78,7 @@ export default function SuperadminDashboard() {
               Monitor all employees across departments.
             </p>
             <a
-              href="/dashboard/superadmin/employees"
+              href="/dashboard/employees"
               className="text-blue-600 hover:underline text-sm"
             >
               View Employees →
