@@ -407,14 +407,30 @@ async def google_callback(request: Request):
 
 @app.post("/logout")
 async def logout(request: Request, response: Response):
-    """Delete session and logout."""
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=400, detail="Missing Authorization header")
+    session_id = None
 
-    session_id = auth_header.split(" ")[1]
+    # 1. Try Authorization header
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        session_id = auth_header.split("Bearer ")[1].strip()
+
+    # 2. If missing, try cookie
+    if not session_id:
+        session_id = request.cookies.get("session_id")
+
+    if not session_id:
+        raise HTTPException(status_code=400, detail="No session token provided")
+
+    # delete DB session
     await delete_session(sessions_collection, session_id)
-    response.delete_cookie("session_id")
+
+    # delete cookie
+    response.delete_cookie(
+        key="session_id",
+        samesite="none",
+        secure=True
+    )
+
     return {"message": "Logged out successfully"}
 
 # ===================================

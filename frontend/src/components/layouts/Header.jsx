@@ -34,7 +34,7 @@ export default function Header() {
 
   // Fetch user from backend
   const fetchUser = async () => {
-    try { 
+    try {
       const res = await fetch(`${API_URL}/auth/me`, {
         method: "GET",
         credentials: "include",
@@ -166,7 +166,10 @@ export default function Header() {
       // Call backend logout endpoint
       await fetch(`${API_URL}/logout`, {
         method: "POST",
-        credentials: "include"
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json"
+        }
       });
     } catch (e) {
       console.error("Logout error:", e);
@@ -217,8 +220,8 @@ export default function Header() {
                           <li
                             key={notif._id}
                             className={`p-2 rounded-md ${notif.status === "unread"
-                                ? "bg-green-50 dark:bg-green-900/20"
-                                : "bg-neutral-50 dark:bg-neutral-800"
+                              ? "bg-green-50 dark:bg-green-900/20"
+                              : "bg-neutral-50 dark:bg-neutral-800"
                               }`}
                           >
                             <p className="text-sm">{notif.message}</p>
@@ -364,8 +367,8 @@ export default function Header() {
                                   <li
                                     key={notif._id}
                                     className={`p-2 rounded-md ${notif.status === "unread"
-                                        ? "bg-green-50 dark:bg-green-900/20"
-                                        : "bg-neutral-50 dark:bg-neutral-800"
+                                      ? "bg-green-50 dark:bg-green-900/20"
+                                      : "bg-neutral-50 dark:bg-neutral-800"
                                       }`}
                                   >
                                     <p className="text-sm">{notif.message}</p>
