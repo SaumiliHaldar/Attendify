@@ -130,7 +130,7 @@ export default function Employees() {
 
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/employees/manual`, {
+      const res = await fetch(`${API_URL}/employees`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -164,7 +164,7 @@ export default function Employees() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch(`${API_URL}/employees`, {
+      const res = await fetch(`${API_URL}/upload/employees`, {
         method: "POST",
         credentials: "include",
         body: formData,
