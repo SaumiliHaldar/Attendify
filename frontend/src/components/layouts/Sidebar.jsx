@@ -24,7 +24,19 @@ export default function Sidebar({
   setNotifications,
   API_URL,
 }) {
-  const [open, setOpen] = useState(true);
+
+  const [open, setOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const saved = localStorage.getItem("sidebar-open");
+
+    // First time user
+    if (!saved) {
+      // collapse automatically if screen width < 768px
+      return window.innerWidth >= 768;
+    }
+
+    return saved === "true";
+  });
   const [notifOpen, setNotifOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const sidebarRef = useRef(null);
@@ -88,7 +100,7 @@ export default function Sidebar({
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log("🔗 WebSocket connected");
+        console.log(" WebSocket connected");
         heartbeat = setInterval(() => {
           ws.send(JSON.stringify({ type: "ping" }));
         }, 25000);
@@ -105,13 +117,13 @@ export default function Sidebar({
       };
 
       ws.onerror = () => {
-        console.warn("⚠️ WS error — reconnecting in 3s");
+        console.warn(" WS error — reconnecting in 3s");
         ws.close();
       };
 
       ws.onclose = () => {
         clearInterval(heartbeat);
-        console.warn("🔌 WS closed — reconnecting in 3s");
+        console.warn(" WS closed — reconnecting in 3s");
         setTimeout(connectWS, 3000);
       };
     };
@@ -124,6 +136,19 @@ export default function Sidebar({
     };
   }, [user, API_URL, setNotifications]);
 
+  // Auto toggle sidebar based on screen size
+  useEffect(() => {
+    const handleResize = () => {
+      const shouldBeOpen = window.innerWidth >= 768;
+      setOpen(shouldBeOpen);
+      localStorage.setItem("sidebar-open", shouldBeOpen);
+    };
+
+    handleResize(); // Run on load
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
 
   return (
     <motion.div
@@ -135,7 +160,12 @@ export default function Sidebar({
     >
       {/* Toggle Button */}
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          const newState = !open;
+          setOpen(newState);
+          localStorage.setItem("sidebar-open", newState);
+        }}
+
         className="absolute -right-3 top-8 z-50 flex items-center justify-center h-6 w-6 rounded-full bg-neutral-200 dark:bg-neutral-700 shadow-md"
       >
         {open ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
