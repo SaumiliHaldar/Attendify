@@ -109,13 +109,13 @@ export default function Dashboard({ children }) {
   // Helper function to get Authorization headers
   const getAuthHeaders = () => {
     // Rely on the browser automatically sending the 'session_id' cookie.
-    return {}; 
+    return {};
   };
-  
+
   // Custom fetch wrapper to handle authentication logic
   const fetchWithAuth = (url, options = {}) => {
-      const headers = { ...getAuthHeaders(), ...options.headers };
-      return fetch(url, { ...options, headers });
+    const headers = { ...getAuthHeaders(), ...options.headers };
+    return fetch(url, { ...options, headers });
   };
 
 
@@ -129,12 +129,12 @@ export default function Dashboard({ children }) {
       const role = urlParams.get('role');
 
       if (email && name && role) {
-          const newUser = { email, name, role, picture: urlParams.get('picture') };
-          setUser(newUser);
-          localStorage.setItem("user", JSON.stringify(newUser));
-          
-          // Clear URL parameters after successful login to prevent re-parsing on refresh
-          window.history.replaceState({}, document.title, window.location.pathname);
+        const newUser = { email, name, role, picture: urlParams.get('picture') };
+        setUser(newUser);
+        localStorage.setItem("user", JSON.stringify(newUser));
+
+        // Clear URL parameters after successful login to prevent re-parsing on refresh
+        window.history.replaceState({}, document.title, window.location.pathname);
       } else if (saved) {
         setUser(JSON.parse(saved));
       }
@@ -167,7 +167,7 @@ export default function Dashboard({ children }) {
 
   useEffect(() => {
     if (!notifOpen || !user?.role) return;
-    
+
     // Using fetchWithAuth
     fetchWithAuth(`${API_URL}/notifications`)
       .then((res) => res.json())
@@ -192,7 +192,7 @@ export default function Dashboard({ children }) {
   useEffect(() => {
     const fetchEmployeeCount = async () => {
       if (!user) return;
-      
+
       try {
         // Using fetchWithAuth
         const res = await fetchWithAuth(`${API_URL}/employees/count`);
@@ -214,7 +214,7 @@ export default function Dashboard({ children }) {
       try {
         const res = await fetch(`${API_URL}/holidays`);
         const data = await res.json();
-        
+
         if (data.holidays && Array.isArray(data.holidays)) {
           setHolidays(data.holidays);
         }
@@ -235,7 +235,7 @@ export default function Dashboard({ children }) {
       try {
         const res = await fetch(`${API_URL}/`);
         const data = await res.json();
-        
+
         // Update overview with weekly average
         if (data.attendance_snapshot?.weekly_avg) {
           setOverview((prev) => ({
@@ -256,7 +256,7 @@ export default function Dashboard({ children }) {
   const markAsRead = async (id) => {
     try {
       // Using fetchWithAuth
-      await fetchWithAuth(`${API_URL}/notifications/read/${id}`, { 
+      await fetchWithAuth(`${API_URL}/notifications/read/${id}`, {
         method: "POST",
       });
       setNotifications((prev) =>
@@ -270,7 +270,7 @@ export default function Dashboard({ children }) {
   const markAllAsRead = async () => {
     try {
       // Using fetchWithAuth
-      await fetchWithAuth(`${API_URL}/notifications/read-all`, { 
+      await fetchWithAuth(`${API_URL}/notifications/read-all`, {
         method: "POST",
       });
       setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
@@ -292,7 +292,7 @@ export default function Dashboard({ children }) {
       console.error("Logout error (non-fatal):", e);
       // The browser is redirecting anyway, so we continue with local cleanup.
     }
-    
+
     if (typeof window !== "undefined") {
       localStorage.removeItem("user");
       // Ensure 'token' is also removed if it were used
@@ -379,33 +379,23 @@ export default function Dashboard({ children }) {
               </CardContent>
             </Card>
 
-            {/* 4. Upcoming Holidays (ALL HOLIDAYS) */}
+            {/* 4. Upcoming Holidays (ALL HOLIDAYS) + Office Info */}
             {!user && (
-              // FIX START: Ensure the container uses the full width on small screens
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6"> 
-                {/* Remove lg:col-span-3 from here, let it rely on the outer grid structure */}
-                <Card className="w-full lg:max-w-3xl lg:mx-auto">
-                  {/* Changed max-w-3xl mx-auto to be lg specific so it fills 100% on mobile */}
+              <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+                <Card className="w-full h-full">
                   <CardHeader className="flex items-center gap-2">
                     <CalendarDays className="w-6 h-6 text-red-500" />
                     <CardTitle>Holidays List</CardTitle>
                   </CardHeader>
                   <CardContent className="max-h-72 overflow-y-auto">
                     {holidays.length === 0 ? (
-                      <p className="text-sm text-gray-500">
-                        No holidays found in database
-                      </p>
+                      <p className="text-sm text-gray-500">No upcoming holidays</p>
                     ) : (
                       <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
                         {holidays.map((h, idx) => (
-                          <li
-                            key={idx}
-                            className="py-3 flex items-center justify-between gap-3"
-                          >
+                          <li key={idx} className="py-3 flex items-center justify-between gap-3">
                             <span className="font-medium truncate">{h.name}</span>
-                            <span className="text-sm text-gray-500 whitespace-nowrap">
-                              {h.date}
-                            </span>
+                            <span className="text-sm text-gray-500">{h.date}</span>
                           </li>
                         ))}
                       </ul>
@@ -413,9 +403,7 @@ export default function Dashboard({ children }) {
                   </CardContent>
                 </Card>
 
-
-                {/* FIX END: Ensure Office Info card spans two columns on large screens only */}
-                <Card className="col-span-1 lg:col-span-2"> 
+                <Card className="w-full h-full lg:col-span-2">
                   <CardHeader className="flex items-center gap-2">
                     <Calendar className="w-6 h-6 text-blue-500" />
                     <CardTitle>Office Info</CardTitle>
@@ -443,7 +431,6 @@ export default function Dashboard({ children }) {
             <>
             </>
           )}
-
 
         </div>
       </div>

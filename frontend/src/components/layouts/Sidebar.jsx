@@ -72,6 +72,59 @@ export default function Sidebar({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // WebSocket: Real-time notifications
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== "superadmin") return;
+
+    let ws;
+    let heartbeat;
+
+    const connectWS = () => {
+      const wsUrl = API_URL.startsWith("https")
+        ? API_URL.replace("https", "wss") + `/notifications/ws?email=${user.email}`
+        : API_URL.replace("http", "ws") + `/notifications/ws?email=${user.email}`;
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log("🔗 WebSocket connected");
+        heartbeat = setInterval(() => {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }, 25000);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          // Expecting notif object returned from API
+          setNotifications((prev) => [data, ...prev]);
+        } catch (e) {
+          console.error("WS parse error:", e);
+        }
+      };
+
+      ws.onerror = () => {
+        console.warn("⚠️ WS error — reconnecting in 3s");
+        ws.close();
+      };
+
+      ws.onclose = () => {
+        clearInterval(heartbeat);
+        console.warn("🔌 WS closed — reconnecting in 3s");
+        setTimeout(connectWS, 3000);
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      if (ws) ws.close();
+      clearInterval(heartbeat);
+    };
+  }, [user, API_URL, setNotifications]);
+
+
   return (
     <motion.div
       ref={sidebarRef}
