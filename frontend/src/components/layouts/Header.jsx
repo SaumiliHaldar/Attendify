@@ -13,6 +13,7 @@ import {
   MobileNavMenu,
 } from "@/components/ui/resizable-navbar";
 import { Bell } from "lucide-react";
+import { NotificationsService } from "@/lib/notifications";
 
 export default function Header() {
   const navItems = [
@@ -24,10 +25,12 @@ export default function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [notifOpen, setNotifOpen] = useState(false);
+  const [desktopNotifOpen, setDesktopNotifOpen] = useState(false);
+  const [mobileNotifOpen, setMobileNotifOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const dropdownRef = useRef(null);
-  const notifRef = useRef(null);
+  const desktopNotifRef = useRef(null);
+  const mobileNotifRef = useRef(null);
   const hasAttemptedFetch = useRef(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -78,9 +81,7 @@ export default function Header() {
 
     // Re-fetch when user returns to tab (after OAuth)
     const handleFocus = () => {
-      if (hasAttemptedFetch.current) {
-        fetchUser();
-      }
+      if (hasAttemptedFetch.current) fetchUser();
     };
 
     window.addEventListener("focus", handleFocus);
@@ -94,73 +95,25 @@ export default function Header() {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setDropdownOpen(false);
       }
-      if (notifRef.current && !notifRef.current.contains(event.target)) {
-        setNotifOpen(false);
+      if (desktopNotifRef.current && !desktopNotifRef.current.contains(event.target)) {
+        setDesktopNotifOpen(false);
+      }
+      if (mobileNotifRef.current && !mobileNotifRef.current.contains(event.target)) {
+        setMobileNotifOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Fetch notifications when notifOpen toggled
-  useEffect(() => {
-    if (notifOpen && user?.role === "superadmin") {
-      fetch(`${API_URL}/notifications`)
-        .then((res) => res.json())
-        .then((data) => setNotifications(data))
-        .catch((err) => console.error("Error fetching notifications:", err));
-    }
-  }, [notifOpen, user]);
-
-  // WebSocket for realtime notifications
-  useEffect(() => {
-    if (user?.role === "superadmin") {
-      let wsUrl;
-      if (API_URL.startsWith("https")) {
-        wsUrl = API_URL.replace("https", "wss") + "/notifications/ws";
-      } else {
-        wsUrl = API_URL.replace("http", "ws") + "/notifications/ws";
-      }
-
-      const ws = new WebSocket(wsUrl);
-
-      ws.onmessage = (event) => {
-        try {
-          const newNotif = JSON.parse(event.data);
-          setNotifications((prev) => [newNotif, ...prev]);
-        } catch (e) {
-          console.error("Invalid WS message:", e);
-        }
-      };
-
-      ws.onerror = (err) => console.error("WS error:", err);
-      return () => ws.close();
-    }
-  }, [user]);
-
-  // Mark single notification as read
-  const markAsRead = async (id) => {
-    try {
-      await fetch(`${API_URL}/notifications/read/${id}`, { method: "POST" });
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
-      );
-    } catch (e) {
-      console.error("Error marking as read:", e);
-    }
+  const markAsRead = (id) => {
+    NotificationsService.markAsRead(id);
   };
 
-  // Mark all notifications as read
-  const markAllAsRead = async () => {
-    try {
-      await fetch(`${API_URL}/notifications/read-all`, { method: "POST" });
-      setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
-    } catch (e) {
-      console.error("Error marking all as read:", e);
-    }
+  const markAllAsRead = () => {
+    NotificationsService.markAllAsRead();
   };
 
-  // Logout function
   const handleLogout = async () => {
     try {
       // Call backend logout endpoint
@@ -174,7 +127,6 @@ export default function Header() {
     } catch (e) {
       console.error("Logout error:", e);
     } finally {
-      // Clear local state regardless
       localStorage.removeItem("user");
       setUser(null);
       setDropdownOpen(false);
@@ -189,17 +141,17 @@ export default function Header() {
         <NavBody>
           <NavbarLogo />
           <div className="flex items-center gap-4 relative">
-            {/* Notification Bell (Desktop) */}
+            {/* Desktop Notification Bell */}
             {user?.role === "superadmin" && (
-              <div ref={notifRef} className="relative">
+              <div ref={desktopNotifRef} className="relative">
                 <Bell
                   className="w-6 h-6 cursor-pointer text-gray-600 dark:text-gray-300"
-                  onClick={() => setNotifOpen(!notifOpen)}
+                  onClick={() => setDesktopNotifOpen(!desktopNotifOpen)}
                 />
-                {notifications.some((n) => n.status === "unread") && !notifOpen && (
+                {notifications.some((n) => n.status === "unread") && !desktopNotifOpen && (
                   <span className="absolute top-0 right-0 inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
                 )}
-                {notifOpen && (
+                {desktopNotifOpen && (
                   <div className="absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
                     <div className="flex items-center justify-between mb-2">
                       <p className="font-semibold">Notifications</p>
@@ -219,16 +171,15 @@ export default function Header() {
                         {notifications.map((notif) => (
                           <li
                             key={notif._id}
-                            className={`p-2 rounded-md ${notif.status === "unread"
-                              ? "bg-green-50 dark:bg-green-900/20"
-                              : "bg-neutral-50 dark:bg-neutral-800"
-                              }`}
+                            className={`p-2 rounded-md ${
+                              notif.status === "unread"
+                                ? "bg-green-50 dark:bg-green-900/20"
+                                : "bg-neutral-50 dark:bg-neutral-800"
+                            }`}
                           >
                             <p className="text-sm">{notif.message}</p>
                             <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs text-gray-500">
-                                {notif.timestamp}
-                              </span>
+                              <span className="text-xs text-gray-500">{notif.timestamp}</span>
                               {notif.status === "unread" && (
                                 <button
                                   onClick={() => markAsRead(notif._id)}
@@ -293,10 +244,7 @@ export default function Header() {
                 )}
               </div>
             ) : (
-              <NavbarButton
-                variant="dark"
-                href={`${API_URL}/auth/google`}
-              >
+              <NavbarButton variant="dark" href={`${API_URL}/auth/google`}>
                 Login
               </NavbarButton>
             )}
@@ -338,15 +286,15 @@ export default function Header() {
 
                     {/* Mobile Notification Bell */}
                     {user?.role === "superadmin" && (
-                      <div ref={notifRef} className="relative">
+                      <div ref={mobileNotifRef} className="relative">
                         <Bell
                           className="w-6 h-6 cursor-pointer text-gray-600 dark:text-gray-300"
-                          onClick={() => setNotifOpen(!notifOpen)}
+                          onClick={() => setMobileNotifOpen(!mobileNotifOpen)}
                         />
-                        {notifications.some((n) => n.status === "unread") && !notifOpen && (
+                        {notifications.some((n) => n.status === "unread") && !mobileNotifOpen && (
                           <span className="absolute top-0 right-0 inline-block w-2 h-2 bg-green-500 rounded-full animate-ping" />
                         )}
-                        {notifOpen && (
+                        {mobileNotifOpen && (
                           <div className="absolute right-0 mt-2 w-72 max-h-96 overflow-y-auto bg-white dark:bg-neutral-900 shadow-lg rounded-xl p-4 z-50">
                             <div className="flex items-center justify-between mb-2">
                               <p className="font-semibold">Notifications</p>
@@ -366,10 +314,11 @@ export default function Header() {
                                 {notifications.map((notif) => (
                                   <li
                                     key={notif._id}
-                                    className={`p-2 rounded-md ${notif.status === "unread"
-                                      ? "bg-green-50 dark:bg-green-900/20"
-                                      : "bg-neutral-50 dark:bg-neutral-800"
-                                      }`}
+                                    className={`p-2 rounded-md ${
+                                      notif.status === "unread"
+                                        ? "bg-green-50 dark:bg-green-900/20"
+                                        : "bg-neutral-50 dark:bg-neutral-800"
+                                    }`}
                                   >
                                     <p className="text-sm">{notif.message}</p>
                                     <div className="flex justify-between items-center mt-1">
