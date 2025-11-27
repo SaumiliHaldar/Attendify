@@ -88,6 +88,28 @@ export default function Header() {
     return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
+  // Subscribe to notifications if user is superadmin
+  useEffect(() => {
+    if (!user || user.role !== "superadmin") return;
+
+    const notifService = getNotificationsService(API_URL);
+
+    // Fetch initial notifications
+    notifService.fetch();
+
+    // Subscribe to updates
+    const unsubscribe = notifService.subscribe((data) => {
+      setNotifications(data);
+    });
+
+    // Connect WebSocket
+    notifService.connect(user.role);
+
+    return () => {
+      unsubscribe();
+      notifService.disconnect();
+    };
+  }, [user]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -171,11 +193,10 @@ export default function Header() {
                         {notifications.map((notif) => (
                           <li
                             key={notif._id}
-                            className={`p-2 rounded-md ${
-                              notif.status === "unread"
+                            className={`p-2 rounded-md ${notif.status === "unread"
                                 ? "bg-green-50 dark:bg-green-900/20"
                                 : "bg-neutral-50 dark:bg-neutral-800"
-                            }`}
+                              }`}
                           >
                             <p className="text-sm">{notif.message}</p>
                             <div className="flex justify-between items-center mt-1">
@@ -314,11 +335,10 @@ export default function Header() {
                                 {notifications.map((notif) => (
                                   <li
                                     key={notif._id}
-                                    className={`p-2 rounded-md ${
-                                      notif.status === "unread"
+                                    className={`p-2 rounded-md ${notif.status === "unread"
                                         ? "bg-green-50 dark:bg-green-900/20"
                                         : "bg-neutral-50 dark:bg-neutral-800"
-                                    }`}
+                                      }`}
                                   >
                                     <p className="text-sm">{notif.message}</p>
                                     <div className="flex justify-between items-center mt-1">
