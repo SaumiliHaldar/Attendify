@@ -4,12 +4,6 @@ import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bell,
-  User,
-  LogOut,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  ChevronDown,
   Users,
   CalendarCheck,
   Calendar,
@@ -19,11 +13,10 @@ import { cn } from "@/lib/utils";
 import { AuroraBackground } from "@/components/ui/aurora-background";
 import { NavbarButton } from "@/components/ui/resizable-navbar";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import SuperadminDashboard from "@/app/dashboard/superadmin/page";
 import AdminDashboard from "@/app/dashboard/admin/page";
 import Sidebar from "@/components/layouts/Sidebar";
-
+import { getNotificationsService } from "@/lib/notifications";
 
 function LiveClockCard() {
   const [time, setTime] = React.useState(new Date());
@@ -65,9 +58,7 @@ function LiveClockCard() {
       {/* Shift Info */}
       <div className="p-4 rounded-lg bg-neutral-100 dark:bg-neutral-800">
         <p className="text-sm font-medium mb-1">🕒 Current Shift</p>
-        <p className="text-sm text-gray-700 dark:text-gray-300">
-          {currentShift}
-        </p>
+        <p className="text-sm text-gray-700 dark:text-gray-300">{currentShift}</p>
       </div>
 
       {/* Static Info */}
@@ -88,7 +79,6 @@ function LiveClockCard() {
 export default function Dashboard({ children }) {
   const [open, setOpen] = useState(true);
   const [user, setUser] = useState(null);
-  const [notifOpen, setNotifOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [holidays, setHolidays] = useState([]);
@@ -106,19 +96,10 @@ export default function Dashboard({ children }) {
     weeklyAvgPresent: 0,
   });
 
-  // Helper function to get Authorization headers
-  const getAuthHeaders = () => {
-    // Rely on the browser automatically sending the 'session_id' cookie.
-    return {};
-  };
+  // Notifications service
+  const notifService = getNotificationsService(API_URL);
 
-  // Custom fetch wrapper to handle authentication logic
-  const fetchWithAuth = (url, options = {}) => {
-    const headers = { ...getAuthHeaders(), ...options.headers };
-    return fetch(url, { ...options, headers });
-  };
-
-
+  // Load user from localStorage or URL params
   useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("user");
@@ -141,95 +122,70 @@ export default function Dashboard({ children }) {
     }
   }, []);
 
+  // Subscribe to notifications
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (user?.role !== "superadmin") return;
+    if (!user || user.role !== "superadmin") return;
 
-    const wsUrl = API_URL.startsWith("https")
-      ? API_URL.replace("https", "wss") + "/notifications/ws"
-      : API_URL.replace("http", "ws") + "/notifications/ws";
+    notifService.fetch(); // initial fetch
 
-    const ws = new WebSocket(wsUrl);
+    const unsubscribe = notifService.subscribe((data) => {
+      setNotifications(data);
+    });
 
-    ws.onmessage = (event) => {
-      try {
-        const newNotif = JSON.parse(event.data);
-        setNotifications((prev) => [newNotif, ...prev]);
-      } catch (e) {
-        console.error("Invalid WS message:", e);
-      }
+    notifService.connect(user.role);
+
+    return () => {
+      unsubscribe();
+      notifService.disconnect();
     };
+  }, [user]);
 
-    ws.onerror = (err) => console.error("WebSocket error:", err);
-
-    return () => ws.close();
-  }, [user, API_URL]);
-
-  useEffect(() => {
-    if (!notifOpen || !user?.role) return;
-
-    // Using fetchWithAuth
-    fetchWithAuth(`${API_URL}/notifications`)
-      .then((res) => res.json())
-      .then((data) => setNotifications(data))
-      .catch((err) => console.error("Error fetching notifications:", err));
-  }, [notifOpen, user, API_URL]);
-
+  // Click outside handler for dropdowns
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (notifRef.current && !notifRef.current.contains(e.target)) {
-        setNotifOpen(false);
-      }
-      if (profileRef.current && !profileRef.current.contains(e.target)) {
-        setDropdownOpen(false);
-      }
+      if (notifRef.current && !notifRef.current.contains(e.target)) setDropdownOpen(false);
+      if (profileRef.current && !profileRef.current.contains(e.target)) setDropdownOpen(false);
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Fetch employee count
+  // Fetch employees count
   useEffect(() => {
     const fetchEmployeeCount = async () => {
       if (!user) return;
 
       try {
-        // Using fetchWithAuth
-        const res = await fetchWithAuth(`${API_URL}/employees/count`);
+        const res = await fetch(`${API_URL}/employees/count`);
         const data = await res.json();
         setOverview((prev) => ({ ...prev, employees: data.count }));
       } catch (err) {
-        console.error("Error fetching employees count:", err);
+        console.error(err);
       }
     };
 
     fetchEmployeeCount();
     const interval = setInterval(fetchEmployeeCount, 30000);
     return () => clearInterval(interval);
-  }, [API_URL, user]);
+  }, [user, API_URL]);
 
   // Fetch ALL holidays from /holidays endpoint
   useEffect(() => {
-    const fetchAllHolidays = async () => {
+    const fetchHolidays = async () => {
       try {
         const res = await fetch(`${API_URL}/holidays`);
         const data = await res.json();
-
-        if (data.holidays && Array.isArray(data.holidays)) {
-          setHolidays(data.holidays);
-        }
+        if (Array.isArray(data.holidays)) setHolidays(data.holidays);
       } catch (err) {
-        console.error("Error fetching holidays:", err);
+        console.error(err);
       }
     };
-
-    fetchAllHolidays();
-    // Refresh holidays every hour (they don't change often)
-    const interval = setInterval(fetchAllHolidays, 3600000);
+    fetchHolidays();
+    const interval = setInterval(fetchHolidays, 3600000);
     return () => clearInterval(interval);
   }, [API_URL]);
 
-  // Fetch dashboard data from home endpoint for weekly average
+  // Fetch weekly average attendance
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -244,7 +200,7 @@ export default function Dashboard({ children }) {
           }));
         }
       } catch (err) {
-        console.error("Error fetching dashboard data:", err);
+        console.error(err);
       }
     };
 
@@ -253,54 +209,21 @@ export default function Dashboard({ children }) {
     return () => clearInterval(interval);
   }, [API_URL]);
 
-  const markAsRead = async (id) => {
-    try {
-      // Using fetchWithAuth
-      await fetchWithAuth(`${API_URL}/notifications/read/${id}`, {
-        method: "POST",
-      });
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === id ? { ...n, status: "read" } : n))
-      );
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const markAllAsRead = async () => {
-    try {
-      // Using fetchWithAuth
-      await fetchWithAuth(`${API_URL}/notifications/read-all`, {
-        method: "POST",
-      });
-      setNotifications((prev) => prev.map((n) => ({ ...n, status: "read" })));
-    } catch (e) {
-      console.error(e);
-    }
-  };
+  // Mark notifications
+  const markAsRead = (id) => notifService.markAsRead(id);
+  const markAllAsRead = () => notifService.markAllAsRead();
 
   const handleLogout = async () => {
     try {
-      // The backend uses the session cookie (which browser sends automatically) to delete the session.
-      await fetch(`${API_URL}/logout`, {
-        method: "POST",
-        headers: {
-          // 'Content-Type': 'application/json' is not strictly necessary for POST without a body
-        },
-      });
+      await fetch(`${API_URL}/logout`, { method: "POST" });
     } catch (e) {
-      console.error("Logout error (non-fatal):", e);
-      // The browser is redirecting anyway, so we continue with local cleanup.
-    }
-
-    if (typeof window !== "undefined") {
+      console.error(e);
+    } finally {
       localStorage.removeItem("user");
-      // Ensure 'token' is also removed if it were used
-      localStorage.removeItem("token");
+      setUser(null);
+      setDropdownOpen(false);
+      window.location.href = "/";
     }
-    setUser(null);
-    setDropdownOpen(false);
-    window.location.href = "/";
   };
 
   const dashboardTitle =
@@ -327,11 +250,6 @@ export default function Dashboard({ children }) {
         <AuroraBackground className="absolute inset-0 -z-10" />
         <div className="relative z-10 space-y-8">
           <h1 className="text-3xl font-bold">{dashboardTitle}</h1>
-          {/* {user && (
-            <p className="text-center text-gray-600 dark:text-gray-300">
-              Logged in as <span className="font-semibold">{user.name}</span> ({user.role})
-            </p>
-          )} */}
           <p className="text-gray-500 dark:text-gray-400">
             {new Date().toLocaleDateString("en-US", {
               weekday: "long",
@@ -340,7 +258,7 @@ export default function Dashboard({ children }) {
               day: "numeric",
             })}
           </p>
-          {/* Overview Cards */}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
             {/* 1. Employees Count */}
             <Card>
@@ -360,9 +278,7 @@ export default function Dashboard({ children }) {
                 <CardTitle>Pending Attendance</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">
-                  {overview.pendingAttendance}
-                </p>
+                <p className="text-2xl font-bold">{overview.pendingAttendance}</p>
               </CardContent>
             </Card>
 
@@ -373,9 +289,7 @@ export default function Dashboard({ children }) {
                 <CardTitle>Weekly Avg Present</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">
-                  {overview.weeklyAvgPresent}
-                </p>
+                <p className="text-2xl font-bold">{overview.weeklyAvgPresent}</p>
               </CardContent>
             </Card>
 
@@ -419,18 +333,13 @@ export default function Dashboard({ children }) {
             )}
           </div>
 
-          {/* {children} */}
-
           {user ? (
             user.role === "superadmin" ? (
               <SuperadminDashboard />
             ) : user.role === "admin" ? (
               <AdminDashboard />
             ) : null
-          ) : (
-            <>
-            </>
-          )}
+          ) : null}
 
         </div>
       </div>
