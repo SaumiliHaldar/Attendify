@@ -15,13 +15,18 @@ export class NotificationsService {
   // Format date & time
   // --------------------------
   static formatDateTime(ts) {
-    if (!ts) return ""; // prevent crashes if missing
+    if (!ts) return "";
+
+    // support both "YYYY-MM-DD HH:mm" and "YYYY-MM-DDTHH:mm:ss" formats
+    ts = ts.replace("T", " ");
+
     const [date, time] = ts.split(" ");
-    if (!time) return date; // fallback if only date provided
+    if (!time) return date;
 
     const [hours, mins] = time.split(":");
     let h = parseInt(hours, 10);
-    if (isNaN(h)) return ts; // fallback if invalid hour
+    if (isNaN(h)) return ts;
+
     const suffix = h >= 12 ? "PM" : "AM";
     h = h % 12 || 12;
 
