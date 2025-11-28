@@ -10,95 +10,16 @@ export class NotificationsService {
     this.subscribers = [];
     this.userRole = null;
 
-    // Notification sound
-    this.audio = new Audio("/notification.mp3");
+    // Don't create Audio yet
+    this.audio = null;
   }
 
-  // --------------------------
-  // Format date & time
-  // --------------------------
-  static formatDateTime(ts) {
-    if (!ts) return "";
-
-    ts = ts.replace("T", " ");
-    const [date, time] = ts.split(" ");
-
-    let yyyy, mm, dd;
-    // check if dd-mm-yyyy
-    if (date.includes("-")) {
-      const parts = date.split("-");
-      if (parts[0].length === 2) [dd, mm, yyyy] = parts;        // dd-mm-yyyy
-      else[yyyy, mm, dd] = parts;                             // yyyy-mm-dd
-    }
-
-    const [hours, mins] = time.split(":");
-    let h = parseInt(hours, 10);
-    const suffix = h >= 12 ? "PM" : "AM";
-    h = h % 12 || 12;
-
-    return `${dd}-${mm}-${yyyy} ${h}:${mins} ${suffix}`;
+  _playSound() {
+    if (typeof window === "undefined") return; // safety check
+    if (!this.audio) this.audio = new Audio("/notification.mp3");
+    this.audio.play().catch(err => console.error("Audio play failed:", err));
   }
 
-  // Subscribe to notification updates
-  subscribe(callback) {
-    this.subscribers.push(callback);
-    callback(this.notifications); // initial call
-    return () => {
-      this.subscribers = this.subscribers.filter((cb) => cb !== callback);
-    };
-  }
-
-  _notifySubscribers() {
-    this.subscribers.forEach((cb) => cb(this.notifications));
-  }
-
-  // Fetch notifications from backend
-  async fetch() {
-    try {
-      const res = await fetch(`${this.API_URL}/notifications`);
-      const data = await res.json();
-
-      // Sort by timestamp descending
-      this.notifications = data
-        .map((n) => ({ ...n, formattedTime: NotificationsService.formatDateTime(n.timestamp) }))
-        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-      this._notifySubscribers();
-    } catch (e) {
-      console.error("Error fetching notifications:", e);
-    }
-  }
-
-  // Optimistic mark as read
-  async markAsRead(id) {
-    const prev = [...this.notifications];
-    this.notifications = this.notifications.map((n) =>
-      n._id === id ? { ...n, status: "read" } : n
-    );
-    this._notifySubscribers();
-    try {
-      await fetch(`${this.API_URL}/notifications/read/${id}`, { method: "POST" });
-    } catch (e) {
-      console.error("Failed to mark as read, rolling back:", e);
-      this.notifications = prev;
-      this._notifySubscribers();
-    }
-  }
-
-  async markAllAsRead() {
-    const prev = [...this.notifications];
-    this.notifications = this.notifications.map((n) => ({ ...n, status: "read" }));
-    this._notifySubscribers();
-    try {
-      await fetch(`${this.API_URL}/notifications/read-all`, { method: "POST" });
-    } catch (e) {
-      console.error("Failed to mark all as read, rolling back:", e);
-      this.notifications = prev;
-      this._notifySubscribers();
-    }
-  }
-
-  // Initialize WebSocket connection
   connect(userRole) {
     if (userRole !== "superadmin") return;
 
@@ -124,11 +45,10 @@ export class NotificationsService {
         const newNotif = JSON.parse(event.data);
         newNotif.formattedTime = NotificationsService.formatDateTime(newNotif.timestamp);
 
-        // Add new notification to the list
         this.notifications = [newNotif, ...this.notifications];
 
-        // Play notification sound
-        this.audio.play().catch(err => console.error("Audio play failed:", err));
+        // Use lazy-play method
+        this._playSound();
 
         // Notify subscribers
         this._notifySubscribers();
@@ -136,7 +56,6 @@ export class NotificationsService {
         console.error("Invalid WS message:", e);
       }
     };
-
 
     ws.onerror = (err) => console.error("WS error:", err);
 
