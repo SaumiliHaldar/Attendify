@@ -17,20 +17,23 @@ export class NotificationsService {
   static formatDateTime(ts) {
     if (!ts) return "";
 
-    // support both "YYYY-MM-DD HH:mm" and "YYYY-MM-DDTHH:mm:ss" formats
     ts = ts.replace("T", " ");
-
     const [date, time] = ts.split(" ");
-    if (!time) return date;
+
+    let yyyy, mm, dd;
+    // check if dd-mm-yyyy
+    if (date.includes("-")) {
+      const parts = date.split("-");
+      if (parts[0].length === 2) [dd, mm, yyyy] = parts;        // dd-mm-yyyy
+      else[yyyy, mm, dd] = parts;                             // yyyy-mm-dd
+    }
 
     const [hours, mins] = time.split(":");
     let h = parseInt(hours, 10);
-    if (isNaN(h)) return ts;
-
     const suffix = h >= 12 ? "PM" : "AM";
     h = h % 12 || 12;
 
-    return `${date} ${h}:${mins} ${suffix}`;
+    return `${dd}-${mm}-${yyyy} ${h}:${mins} ${suffix}`;
   }
 
   // Subscribe to notification updates
