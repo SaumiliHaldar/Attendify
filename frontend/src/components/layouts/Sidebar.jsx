@@ -13,10 +13,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NavbarButton } from "@/components/ui/resizable-navbar";
+import { getNotificationsService, NotificationsService } from "@/lib/notifications";
 
-/**
- * ✅ Sidebar Component extracted from Dashboard.jsx
- */
+
 export default function Sidebar({
   user,
   setUser,
@@ -248,7 +247,7 @@ export default function Sidebar({
                         <div className="flex flex-col">
                           <span>{notif.message}</span>
                           <span className="text-sm text-gray-500 mt-1">
-                            {new Date(notif.timestamp).toLocaleString()}
+                            {notif.formattedTime}
                           </span>
                         </div>
                         {notif.status === "unread" && (

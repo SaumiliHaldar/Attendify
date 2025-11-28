@@ -16,7 +16,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import SuperadminDashboard from "@/app/dashboard/superadmin/page";
 import AdminDashboard from "@/app/dashboard/admin/page";
 import Sidebar from "@/components/layouts/Sidebar";
-import { getNotificationsService } from "@/lib/notifications";
+import { getNotificationsService, NotificationsService } from "@/lib/notifications";
 
 function LiveClockCard() {
   const [time, setTime] = React.useState(new Date());
