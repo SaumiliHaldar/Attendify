@@ -9,6 +9,9 @@ export class NotificationsService {
     this.notifications = [];
     this.subscribers = [];
     this.userRole = null;
+
+    // Notification sound
+    this.audio = new Audio("/notification.mp3");
   }
 
   // --------------------------
@@ -120,12 +123,20 @@ export class NotificationsService {
       try {
         const newNotif = JSON.parse(event.data);
         newNotif.formattedTime = NotificationsService.formatDateTime(newNotif.timestamp);
+
+        // Add new notification to the list
         this.notifications = [newNotif, ...this.notifications];
+
+        // Play notification sound
+        this.audio.play().catch(err => console.error("Audio play failed:", err));
+
+        // Notify subscribers
         this._notifySubscribers();
       } catch (e) {
         console.error("Invalid WS message:", e);
       }
     };
+
 
     ws.onerror = (err) => console.error("WS error:", err);
 
