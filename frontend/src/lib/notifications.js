@@ -11,6 +11,23 @@ export class NotificationsService {
     this.userRole = null;
   }
 
+  // --------------------------
+  // Format date & time
+  // --------------------------
+  static formatDateTime(ts) {
+    if (!ts) return ""; // prevent crashes if missing
+    const [date, time] = ts.split(" ");
+    if (!time) return date; // fallback if only date provided
+
+    const [hours, mins] = time.split(":");
+    let h = parseInt(hours, 10);
+    if (isNaN(h)) return ts; // fallback if invalid hour
+    const suffix = h >= 12 ? "PM" : "AM";
+    h = h % 12 || 12;
+
+    return `${date} ${h}:${mins} ${suffix}`;
+  }
+
   // Subscribe to notification updates
   subscribe(callback) {
     this.subscribers.push(callback);
@@ -29,14 +46,11 @@ export class NotificationsService {
     try {
       const res = await fetch(`${this.API_URL}/notifications`);
       const data = await res.json();
+
       // Sort by timestamp descending
-      this.notifications = data.sort((a, b) => {
-        const parse = (t) => {
-          const [d, m, y, h, min, s] = t.replace(/[- :]/g, " ").split(" ");
-          return new Date(`${y}-${m}-${d}T${h}:${min}:${s}`);
-        };
-        return parse(b.timestamp) - parse(a.timestamp);
-      });
+      this.notifications = data
+        .map((n) => ({ ...n, formattedTime: NotificationsService.formatDateTime(n.timestamp) }))
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       this._notifySubscribers();
     } catch (e) {
@@ -79,7 +93,7 @@ export class NotificationsService {
 
     this.userRole = userRole;
 
-    if (ws && isConnected) return; // prevent multiple WS
+    if (ws && isConnected) return;
 
     let wsUrl = this.API_URL.startsWith("https")
       ? this.API_URL.replace("https", "wss") + "/notifications/ws"
@@ -97,6 +111,7 @@ export class NotificationsService {
     ws.onmessage = (event) => {
       try {
         const newNotif = JSON.parse(event.data);
+        newNotif.formattedTime = NotificationsService.formatDateTime(newNotif.timestamp);
         this.notifications = [newNotif, ...this.notifications];
         this._notifySubscribers();
       } catch (e) {

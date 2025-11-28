@@ -13,7 +13,7 @@ import {
   MobileNavMenu,
 } from "@/components/ui/resizable-navbar";
 import { Bell } from "lucide-react";
-import { getNotificationsService } from "@/lib/notifications";
+import { getNotificationsService, NotificationsService } from "@/lib/notifications";
 
 export default function Header() {
   const navItems = [
@@ -63,21 +63,6 @@ export default function Header() {
       localStorage.removeItem("user");
     }
   };
-
-  
-  // Format date & time
-  const formatDateTime = (ts) => {
-    if (!ts) return ""; // prevent crashes if missing
-    const [date, time] = ts.split(" ");
-    const [hours, mins] = time.split(":");
-
-    let h = parseInt(hours, 10);
-    const suffix = h >= 12 ? "PM" : "AM";
-    h = h % 12 || 12;
-
-    return `${date} ${h}:${mins} ${suffix}`;
-  };
-
 
   // Load user on mount AND when window regains focus (after OAuth redirect)
   useEffect(() => {
@@ -216,7 +201,7 @@ export default function Header() {
                           >
                             <p className="text-sm">{notif.message}</p>
                             <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs text-gray-500">{formatDateTime(notif.timestamp)}</span>
+                              <span className="text-xs text-gray-500">{NotificationsService.formatDateTime(notif.timestamp)}</span>
                               {notif.status === "unread" && (
                                 <button
                                   onClick={() => markAsRead(notif._id)}
@@ -358,7 +343,7 @@ export default function Header() {
                                   >
                                     <p className="text-sm">{notif.message}</p>
                                     <div className="flex justify-between items-center mt-1">
-                                      <span className="text-xs text-gray-500"> {formatDateTime(notif.timestamp)}</span>
+                                      <span className="text-xs text-gray-500"> {NotificationsService.formatDateTime(notif.timestamp)}</span>
                                       {notif.status === "unread" && (
                                         <button
                                           onClick={() => markAsRead(notif._id)}
