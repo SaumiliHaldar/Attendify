@@ -13,7 +13,7 @@ import {
   MobileNavMenu,
 } from "@/components/ui/resizable-navbar";
 import { Bell } from "lucide-react";
-import { NotificationsService } from "@/lib/notifications";
+import { getNotificationsService } from "@/lib/notifications";
 
 export default function Header() {
   const navItems = [
@@ -34,6 +34,9 @@ export default function Header() {
   const hasAttemptedFetch = useRef(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
+  // Get Notifications Service
+  const notifService = getNotificationsService();
 
   // Fetch user from backend
   const fetchUser = async () => {
@@ -60,6 +63,21 @@ export default function Header() {
       localStorage.removeItem("user");
     }
   };
+
+  
+  // Format date & time
+  const formatDateTime = (ts) => {
+    if (!ts) return ""; // prevent crashes if missing
+    const [date, time] = ts.split(" ");
+    const [hours, mins] = time.split(":");
+
+    let h = parseInt(hours, 10);
+    const suffix = h >= 12 ? "PM" : "AM";
+    h = h % 12 || 12;
+
+    return `${date} ${h}:${mins} ${suffix}`;
+  };
+
 
   // Load user on mount AND when window regains focus (after OAuth redirect)
   useEffect(() => {
@@ -91,8 +109,6 @@ export default function Header() {
   // Subscribe to notifications if user is superadmin
   useEffect(() => {
     if (!user || user.role !== "superadmin") return;
-
-    const notifService = getNotificationsService(API_URL);
 
     // Fetch initial notifications
     notifService.fetch();
@@ -129,11 +145,11 @@ export default function Header() {
   }, []);
 
   const markAsRead = (id) => {
-    NotificationsService.markAsRead(id);
+    notifService.markAsRead(id);
   };
 
   const markAllAsRead = () => {
-    NotificationsService.markAllAsRead();
+    notifService.markAllAsRead();
   };
 
   const handleLogout = async () => {
@@ -194,13 +210,13 @@ export default function Header() {
                           <li
                             key={notif._id}
                             className={`p-2 rounded-md ${notif.status === "unread"
-                                ? "bg-green-50 dark:bg-green-900/20"
-                                : "bg-neutral-50 dark:bg-neutral-800"
+                              ? "bg-green-50 dark:bg-green-900/20"
+                              : "bg-neutral-50 dark:bg-neutral-800"
                               }`}
                           >
                             <p className="text-sm">{notif.message}</p>
                             <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs text-gray-500">{notif.timestamp}</span>
+                              <span className="text-xs text-gray-500">{formatDateTime(notif.timestamp)}</span>
                               {notif.status === "unread" && (
                                 <button
                                   onClick={() => markAsRead(notif._id)}
@@ -336,13 +352,13 @@ export default function Header() {
                                   <li
                                     key={notif._id}
                                     className={`p-2 rounded-md ${notif.status === "unread"
-                                        ? "bg-green-50 dark:bg-green-900/20"
-                                        : "bg-neutral-50 dark:bg-neutral-800"
+                                      ? "bg-green-50 dark:bg-green-900/20"
+                                      : "bg-neutral-50 dark:bg-neutral-800"
                                       }`}
                                   >
                                     <p className="text-sm">{notif.message}</p>
                                     <div className="flex justify-between items-center mt-1">
-                                      <span className="text-xs text-gray-500">{notif.timestamp}</span>
+                                      <span className="text-xs text-gray-500"> {formatDateTime(notif.timestamp)}</span>
                                       {notif.status === "unread" && (
                                         <button
                                           onClick={() => markAsRead(notif._id)}

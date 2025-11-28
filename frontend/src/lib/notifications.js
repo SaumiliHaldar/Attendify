@@ -30,9 +30,14 @@ export class NotificationsService {
       const res = await fetch(`${this.API_URL}/notifications`);
       const data = await res.json();
       // Sort by timestamp descending
-      this.notifications = data.sort(
-        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-      );
+      this.notifications = data.sort((a, b) => {
+        const parse = (t) => {
+          const [d, m, y, h, min, s] = t.replace(/[- :]/g, " ").split(" ");
+          return new Date(`${y}-${m}-${d}T${h}:${min}:${s}`);
+        };
+        return parse(b.timestamp) - parse(a.timestamp);
+      });
+
       this._notifySubscribers();
     } catch (e) {
       console.error("Error fetching notifications:", e);
@@ -86,6 +91,7 @@ export class NotificationsService {
       console.log("Notifications WS connected");
       isConnected = true;
       if (wsReconnectTimeout) clearTimeout(wsReconnectTimeout);
+      this.fetch();
     };
 
     ws.onmessage = (event) => {
