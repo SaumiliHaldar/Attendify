@@ -156,9 +156,11 @@ export default function Dashboard({ children }) {
       if (!user) return;
 
       try {
-        const res = await fetch(`${API_URL}/employees/count`);
+        const res = await fetch(`${API_URL}/employees/count`, {
+          credentials: "include",
+        });
         const data = await res.json();
-        setOverview((prev) => ({ ...prev, employees: data.count }));
+        setOverview((prev) => ({ ...prev, employees: data.count || 0 }));
       } catch (err) {
         console.error(err);
       }
