@@ -1,4 +1,5 @@
 "use client";
+
 let ws = null;
 let wsReconnectTimeout = null;
 let isConnected = false;
@@ -9,27 +10,55 @@ export class NotificationsService {
     this.notifications = [];
     this.subscribers = [];
     this.userRole = null;
+
+    // AudioContext lazy init
+    this.audioCtx = null;
   }
 
-  // --------------------------
-  // Format date & time
-  // --------------------------
+  // ----- Web Audio API: No autoplay block, no user click required -----
+  _playSound() {
+    try {
+      if (typeof window === "undefined") return;
+
+      if (!this.audioCtx) {
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      const duration = 0.2;
+      const oscillator = this.audioCtx.createOscillator();
+      const gainNode = this.audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(this.audioCtx.destination);
+
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, this.audioCtx.currentTime);
+
+      gainNode.gain.setValueAtTime(0.12, this.audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(
+        0.0001,
+        this.audioCtx.currentTime + duration
+      );
+
+      oscillator.start();
+      oscillator.stop(this.audioCtx.currentTime + duration);
+    } catch (err) {
+      console.error("Sound playback error:", err);
+    }
+  }
+
   static formatDateTime(ts) {
     if (!ts) return "";
 
     ts = ts.replace("T", " ");
     const [date, time] = ts.split(" ");
 
+    const parts = date.split("-");
     let yyyy, mm, dd;
-    // check if dd-mm-yyyy
-    if (date.includes("-")) {
-      const parts = date.split("-");
-      if (parts[0].length === 2) [dd, mm, yyyy] = parts;        // dd-mm-yyyy
-      else[yyyy, mm, dd] = parts;                             // yyyy-mm-dd
-    }
+    parts[0].length === 2 ? ([dd, mm, yyyy] = parts) : ([yyyy, mm, dd] = parts);
 
-    const [hours, mins] = time.split(":");
-    let h = parseInt(hours, 10);
+    const [hh, mins] = time.split(":");
+    let h = parseInt(hh);
     const suffix = h >= 12 ? "PM" : "AM";
     h = h % 12 || 12;
 
@@ -39,10 +68,8 @@ export class NotificationsService {
   // Subscribe to notification updates
   subscribe(callback) {
     this.subscribers.push(callback);
-    callback(this.notifications); // initial call
-    return () => {
-      this.subscribers = this.subscribers.filter((cb) => cb !== callback);
-    };
+    callback(this.notifications);
+    return () => (this.subscribers = this.subscribers.filter((cb) => cb !== callback));
   }
 
   _notifySubscribers() {
@@ -73,6 +100,7 @@ export class NotificationsService {
       n._id === id ? { ...n, status: "read" } : n
     );
     this._notifySubscribers();
+
     try {
       await fetch(`${this.API_URL}/notifications/read/${id}`, { method: "POST" });
     } catch (e) {
@@ -86,6 +114,7 @@ export class NotificationsService {
     const prev = [...this.notifications];
     this.notifications = this.notifications.map((n) => ({ ...n, status: "read" }));
     this._notifySubscribers();
+
     try {
       await fetch(`${this.API_URL}/notifications/read-all`, { method: "POST" });
     } catch (e) {
@@ -98,12 +127,9 @@ export class NotificationsService {
   // Initialize WebSocket connection
   connect(userRole) {
     if (userRole !== "superadmin") return;
-
-    this.userRole = userRole;
-
     if (ws && isConnected) return;
 
-    let wsUrl = this.API_URL.startsWith("https")
+    const wsUrl = this.API_URL.startsWith("https")
       ? this.API_URL.replace("https", "wss") + "/notifications/ws"
       : this.API_URL.replace("http", "ws") + "/notifications/ws";
 
@@ -120,6 +146,7 @@ export class NotificationsService {
       try {
         const newNotif = JSON.parse(event.data);
         newNotif.formattedTime = NotificationsService.formatDateTime(newNotif.timestamp);
+
         this.notifications = [newNotif, ...this.notifications];
         this._notifySubscribers();
       } catch (e) {
