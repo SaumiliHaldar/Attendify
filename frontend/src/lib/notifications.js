@@ -25,11 +25,21 @@ export class NotificationsService {
 
     this.userRole = userRole;
 
+    // Always fetch even if WS not connected yet
+    if (!ws) this.fetch();
+
     if (ws && isConnected) return;
 
-    let wsUrl = this.API_URL.startsWith("https")
-      ? this.API_URL.replace("https", "wss") + "/notifications/ws"
-      : this.API_URL.replace("http", "ws") + "/notifications/ws";
+    let wsUrl;
+    try {
+      const url = new URL(this.API_URL);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.pathname = "/notifications/ws";
+      wsUrl = url.toString();
+    } catch (e) {
+      console.error("Invalid WebSocket URL:", e);
+      return;
+    }
 
     ws = new WebSocket(wsUrl);
 
