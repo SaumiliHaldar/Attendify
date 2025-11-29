@@ -601,7 +601,7 @@ async def get_employees():
 
 @app.get("/employees/count")
 async def get_employee_count(request: Request, response: Response):
-    await verify_session(request, response)
+    await verify_session(request, sessions_collection)
     count = await db.employees.count_documents({})
     return {"count": count}
 
