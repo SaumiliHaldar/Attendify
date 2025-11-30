@@ -78,6 +78,7 @@ export default function Employees() {
     }
   }, []);
 
+  
   // Fetch Employees - FIXED: Added silent parameter
   const fetchEmployees = async (silent = false) => {
     // Check for user existence instead of token
@@ -91,7 +92,7 @@ export default function Employees() {
       const params = new URLSearchParams({
         skip: String(page * limit),
         limit: String(limit),
-        search: search.trim().toLowerCase(),
+        search: search.trim(),
         emp_type: empType === "all" ? "" : empType.toLowerCase(),
       });
 
@@ -108,7 +109,9 @@ export default function Employees() {
           )
         );
 
-        setTotal(data.pagination?.total || 0);
+        // backend returns {total} — use this
+        setTotal(data.total || 0);
+
       } else {
         if (res.status === 403) {
           localStorage.removeItem("user");
@@ -126,11 +129,12 @@ export default function Employees() {
     }
   };
 
+
   // Fetch employees whenever page, type, search, or user changes
   useEffect(() => {
     if (user) {
       fetchEmployees();
-      
+
       // Silent fetch every 3 seconds
       fetchIntervalRef.current = setInterval(() => {
         fetchEmployees(true);
@@ -518,8 +522,8 @@ export default function Employees() {
                     No employees found.
                   </div>
                 ) : (
-                  <motion.div 
-                    layout 
+                  <motion.div
+                    layout
                     className="overflow-x-auto w-full scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-500"
                     style={{
                       scrollbarWidth: 'thin',
@@ -546,7 +550,7 @@ export default function Employees() {
                               initial={{ opacity: 0, x: -20 }}
                               animate={{ opacity: 1, x: 0 }}
                               exit={{ opacity: 0, x: 20, height: 0 }}
-                              transition={{ 
+                              transition={{
                                 delay: idx * 0.02,
                                 layout: { duration: 0.3 }
                               }}
