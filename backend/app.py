@@ -640,11 +640,48 @@ async def delete_employee(emp_no: str, request: Request):
 
 
 @app.get("/employees")
-async def get_employees():
-    emps = await db["employees"].find().sort("emp_no", 1).to_list(200)
-    for e in emps:
+async def get_employees(
+    request: Request,
+    skip: int = 0,
+    limit: int = 10,
+    search: str = "",
+    emp_type: str = "",
+):
+    await verify_session(request, sessions_collection)
+
+    query = {}
+
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"designation": {"$regex": search, "$options": "i"}},
+            {"emp_no": {"$regex": search, "$options": "i"}},
+        ]
+
+    if emp_type:
+        query["type"] = emp_type.lower()
+
+    total = await db["employees"].count_documents(query)
+
+    cursor = (
+        db["employees"]
+        .find(query)
+        .sort("emp_no", 1)
+        .skip(skip)
+        .limit(limit)
+    )
+
+    employees = await cursor.to_list(length=limit)
+    for e in employees:
         e["_id"] = str(e["_id"])
-    return {"employees": emps, "count": len(emps)}
+
+    return {
+        "employees": employees,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "page": skip // limit,
+    }
 
 
 @app.get("/employees/count")
