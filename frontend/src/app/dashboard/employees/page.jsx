@@ -130,7 +130,7 @@ export default function Employees() {
   useEffect(() => {
     if (user) {
       fetchEmployees();
-
+      
       // Silent fetch every 3 seconds
       fetchIntervalRef.current = setInterval(() => {
         fetchEmployees(true);
@@ -518,9 +518,9 @@ export default function Employees() {
                     No employees found.
                   </div>
                 ) : (
-                  <motion.div
-                    layout
-                    className="overflow-x-auto w-full scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-500 sm:scrollbar-hidden"
+                  <motion.div 
+                    layout 
+                    className="overflow-x-auto w-full scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-500"
                     style={{
                       scrollbarWidth: 'thin',
                       scrollbarColor: '#9ca3af #f3f4f6'
@@ -546,7 +546,7 @@ export default function Employees() {
                               initial={{ opacity: 0, x: -20 }}
                               animate={{ opacity: 1, x: 0 }}
                               exit={{ opacity: 0, x: 20, height: 0 }}
-                              transition={{
+                              transition={{ 
                                 delay: idx * 0.02,
                                 layout: { duration: 0.3 }
                               }}
@@ -617,46 +617,6 @@ export default function Employees() {
                   </motion.div>
                 )}
               </CardContent>
-
-              {/* Search & Filter Row */}
-              <CardHeader className="flex flex-col sm:flex-row justify-center sm:justify-between items-center gap-2 flex-shrink-0">
-                <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto justify-center sm:justify-start">
-                  <Input
-                    placeholder="Search by name, number, or designation..."
-                    className="flex-1 min-w-[200px]"
-                    value={search}
-                    onChange={(e) => {
-                      setSearch(e.target.value);
-                      setPage(0);
-                    }}
-                    onKeyPress={(e) => {
-                      if (e.key === "Enter") handleSearch();
-                    }}
-                  />
-
-                  <Select
-                    value={empType}
-                    onValueChange={(val) => {
-                      setEmpType(val);
-                      setPage(0);
-                    }}
-                  >
-                    <SelectTrigger className="w-full sm:w-[180px]">
-                      <SelectValue placeholder="All" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="regular">Regular</SelectItem>
-                      <SelectItem value="apprentice">Apprentice</SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  <Button onClick={handleSearch} variant="outline">
-                    Search
-                  </Button>
-                </div>
-              </CardHeader>
-
 
               <div className="flex flex-col sm:flex-row justify-between items-center gap-2 p-4 border-t bg-gray-50 flex-shrink-0">
                 <div className="text-sm text-gray-600">
