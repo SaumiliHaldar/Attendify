@@ -548,7 +548,7 @@ export default function Employees() {
                           <TableHead>Name</TableHead>
                           <TableHead>Designation</TableHead>
                           <TableHead>Type</TableHead>
-                          <TableHead className="text-right pr-6">Actions</TableHead>
+                          <TableHead>Actions</TableHead>
                         </TableRow>
                       </TableHeader>
 
@@ -573,8 +573,8 @@ export default function Employees() {
                               <TableCell className="capitalize">
                                 {emp.type}
                               </TableCell>
-                              <TableCell className="text-right pr-6">
-                                <div className="flex gap-1 justify-end">
+                              <TableCell className="pl-6">
+                                <div className="flex gap-1">
                                   {deleteConfirm === emp.emp_no ? (
                                     <motion.div
                                       initial={{ scale: 0.8, opacity: 0 }}
