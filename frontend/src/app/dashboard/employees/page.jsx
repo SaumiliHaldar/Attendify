@@ -548,7 +548,7 @@ export default function Employees() {
                           <TableHead>Name</TableHead>
                           <TableHead>Designation</TableHead>
                           <TableHead>Type</TableHead>
-                          <TableHead>Actions</TableHead>
+                          <TableHead className="text-center">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
 
