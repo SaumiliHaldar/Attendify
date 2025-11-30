@@ -78,8 +78,8 @@ export default function Employees() {
     }
   }, []);
 
-  // Fetch Employees
-  const fetchEmployees = async () => {
+  // Fetch Employees - FIXED: Added silent parameter
+  const fetchEmployees = async (silent = false) => {
     // Check for user existence instead of token
     if (!user) {
       if (!silent) setLoading(false);
@@ -94,7 +94,6 @@ export default function Employees() {
         search: search.trim().toLowerCase(),
         emp_type: empType === "all" ? "" : empType.toLowerCase(),
       });
-
 
       const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
         credentials: "include",
