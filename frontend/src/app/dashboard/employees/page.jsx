@@ -474,10 +474,11 @@ export default function Employees() {
 
             <Card className="flex-1 flex flex-col overflow-hidden w-full">
               <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 flex-shrink-0">
-                <div className="flex flex-col w-full gap-2">
-                  {/* Search input — always full width */}
+                <div className="flex w-full flex-col sm:flex-row sm:items-center gap-2">
+
+                  {/* Search input */}
                   <Input
-                    placeholder="Search by name, number, or designation..."
+                    placeholder="Search name, employee no., or designation..."
                     className="flex-1 min-w-[200px]"
                     value={search}
                     onChange={(e) => {
@@ -489,8 +490,9 @@ export default function Employees() {
                     }}
                   />
 
-                  {/* Dropdown + Search button - side-by-side on small screens */}
-                  <div className="flex gap-2 w-full">
+                  {/* Dropdown + Search button container */}
+                  <div className="flex gap-2 w-full sm:w-auto">
+                    {/* Type dropdown */}
                     <Select
                       value={empType}
                       onValueChange={(val) => {
@@ -498,7 +500,6 @@ export default function Employees() {
                         setPage(0);
                       }}
                     >
-                      {/* 60% width on mobile, 180px on desktop */}
                       <SelectTrigger className="w-[60%] sm:w-[180px]">
                         <SelectValue placeholder="All" />
                       </SelectTrigger>
@@ -509,18 +510,17 @@ export default function Employees() {
                       </SelectContent>
                     </Select>
 
-                    {/* 40% width on mobile, auto width on desktop */}
+                    {/* Search button */}
                     <Button
                       onClick={handleSearch}
-                      className="w-[40%] sm:w-auto gap-1"
+                      className="w-[40%] sm:w-auto"
                     >
                       Search
                     </Button>
                   </div>
-
                 </div>
-
               </CardHeader>
+
 
               {/* Table Content */}
               <CardContent className="flex-1 overflow-y-auto p-0">
