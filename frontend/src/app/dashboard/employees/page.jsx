@@ -78,7 +78,7 @@ export default function Employees() {
     }
   }, []);
 
-  
+
   // Fetch Employees - FIXED: Added silent parameter
   const fetchEmployees = async (silent = false) => {
     // Check for user existence instead of token
@@ -474,7 +474,8 @@ export default function Employees() {
 
             <Card className="flex-1 flex flex-col overflow-hidden w-full">
               <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 flex-shrink-0">
-                <div className="flex flex-wrap gap-2 w-full">
+                <div className="flex flex-col w-full gap-2">
+                  {/* Search input — always full width */}
                   <Input
                     placeholder="Search by name, number, or designation..."
                     className="flex-1 min-w-[200px]"
@@ -488,27 +489,37 @@ export default function Employees() {
                     }}
                   />
 
-                  <Select
-                    value={empType}
-                    onValueChange={(val) => {
-                      setEmpType(val);
-                      setPage(0);
-                    }}
-                  >
-                    <SelectTrigger className="w-full sm:w-[180px]">
-                      <SelectValue placeholder="All" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="regular">Regular</SelectItem>
-                      <SelectItem value="apprentice">Apprentice</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  {/* Dropdown + Search button - side-by-side on small screens */}
+                  <div className="flex gap-2 w-full">
+                    <Select
+                      value={empType}
+                      onValueChange={(val) => {
+                        setEmpType(val);
+                        setPage(0);
+                      }}
+                    >
+                      {/* 60% width on mobile, 180px on desktop */}
+                      <SelectTrigger className="w-[60%] sm:w-[180px]">
+                        <SelectValue placeholder="All" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="regular">Regular</SelectItem>
+                        <SelectItem value="apprentice">Apprentice</SelectItem>
+                      </SelectContent>
+                    </Select>
 
-                  <Button onClick={handleSearch} variant="outline">
-                    Search
-                  </Button>
+                    {/* 40% width on mobile, auto width on desktop */}
+                    <Button
+                      onClick={handleSearch}
+                      className="w-[40%] sm:w-auto gap-1"
+                    >
+                      Search
+                    </Button>
+                  </div>
+
                 </div>
+
               </CardHeader>
 
               {/* Table Content */}
