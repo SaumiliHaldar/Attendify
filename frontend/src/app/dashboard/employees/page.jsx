@@ -574,32 +574,30 @@ export default function Employees() {
                                 {emp.type}
                               </TableCell>
                               <TableCell className="pl-6">
-                                <div className="flex gap-1">
+                                <div className="flex items-center justify-center min-w-[80px]">
                                   {deleteConfirm === emp.emp_no ? (
                                     <motion.div
                                       initial={{ scale: 0.8, opacity: 0 }}
                                       animate={{ scale: 1, opacity: 1 }}
-                                      className="flex gap-1 items-center"
+                                      className="flex gap-1 items-center justify-center w-full"
                                     >
-                                      <span className="text-xs text-gray-600 mr-1">
-                                        Confirm?
-                                      </span>
+                                      <span className="text-xs text-gray-600">Confirm?</span>
                                       <Button
                                         size="sm"
                                         variant="destructive"
                                         onClick={() => handleDeleteEmployee(emp.emp_no)}
                                         disabled={loading}
-                                        className="h-7 w-7 p-0"
+                                        className="h-8 w-8 p-0 flex items-center justify-center"
                                       >
-                                        <Check className="w-3 h-3" />
+                                        <Check className="w-4 h-4" />
                                       </Button>
                                       <Button
                                         size="sm"
                                         variant="outline"
                                         onClick={() => setDeleteConfirm(null)}
-                                        className="h-7 w-7 p-0"
+                                        className="h-8 w-8 p-0 flex items-center justify-center"
                                       >
-                                        <X className="w-3 h-3" />
+                                        <X className="w-4 h-4" />
                                       </Button>
                                     </motion.div>
                                   ) : (
@@ -608,7 +606,7 @@ export default function Employees() {
                                         size="sm"
                                         variant="ghost"
                                         onClick={() => openEditDialog(emp)}
-                                        className="h-8 w-8 p-0 hover:bg-blue-50"
+                                        className="h-8 w-8 p-0 flex items-center justify-center hover:bg-blue-50"
                                       >
                                         <Edit className="w-4 h-4 text-blue-600" />
                                       </Button>
@@ -616,7 +614,7 @@ export default function Employees() {
                                         size="sm"
                                         variant="ghost"
                                         onClick={() => setDeleteConfirm(emp.emp_no)}
-                                        className="h-8 w-8 p-0 hover:bg-red-50"
+                                        className="h-8 w-8 p-0 flex items-center justify-center hover:bg-red-50"
                                       >
                                         <Trash2 className="w-4 h-4 text-red-600" />
                                       </Button>
@@ -624,6 +622,7 @@ export default function Employees() {
                                   )}
                                 </div>
                               </TableCell>
+
                             </motion.tr>
                           ))}
                         </AnimatePresence>
