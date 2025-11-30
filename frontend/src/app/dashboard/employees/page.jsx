@@ -518,15 +518,22 @@ export default function Employees() {
                     No employees found.
                   </div>
                 ) : (
-                  <motion.div layout className="overflow-x-auto w-full">
+                  <motion.div 
+                    layout 
+                    className="overflow-x-auto w-full scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-500"
+                    style={{
+                      scrollbarWidth: 'thin',
+                      scrollbarColor: '#9ca3af #f3f4f6'
+                    }}
+                  >
                     <Table className="min-w-[700px] text-sm w-full">
                       <TableHeader>
                         <TableRow className="bg-gray-100 sticky top-0">
-                          <TableHead>Emp No</TableHead>
+                          <TableHead className="pl-6">Emp No</TableHead>
                           <TableHead>Name</TableHead>
                           <TableHead>Designation</TableHead>
                           <TableHead>Type</TableHead>
-                          <TableHead className="text-right">Actions</TableHead>
+                          <TableHead className="text-right pr-6">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
 
@@ -545,13 +552,13 @@ export default function Employees() {
                               }}
                               className="hover:bg-gray-50 border-b"
                             >
-                              <TableCell>{emp.emp_no}</TableCell>
+                              <TableCell className="pl-6">{emp.emp_no}</TableCell>
                               <TableCell>{emp.name}</TableCell>
                               <TableCell>{emp.designation}</TableCell>
                               <TableCell className="capitalize">
                                 {emp.type}
                               </TableCell>
-                              <TableCell className="text-right">
+                              <TableCell className="text-right pr-6">
                                 <div className="flex gap-1 justify-end">
                                   {deleteConfirm === emp.emp_no ? (
                                     <motion.div
