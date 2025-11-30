@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import React, { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import Sidebar from "@/components/layouts/Sidebar";
 import { AuroraBackground } from "@/components/ui/aurora-background";
 import {
@@ -34,15 +34,24 @@ import {
   TableRow,
   TableCell,
 } from "@/components/ui/table";
-import { Users, Upload, Plus, Loader2 } from "lucide-react";
+import { Users, Upload, Plus, Loader2, Edit, Trash2, X, Check } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
 export default function Employees() {
   const [addOpen, setAddOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [loading, setLoading] = useState(false);
   const [file, setFile] = useState(null);
   const [form, setForm] = useState({
+    emp_no: "",
+    name: "",
+    designation: "",
+    type: "regular",
+  });
+
+  const [editForm, setEditForm] = useState({
     emp_no: "",
     name: "",
     designation: "",
@@ -60,6 +69,7 @@ export default function Employees() {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
   const totalPages = Math.ceil(total / limit);
+  const fetchIntervalRef = useRef(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -72,11 +82,11 @@ export default function Employees() {
   const fetchEmployees = async () => {
     // Check for user existence instead of token
     if (!user) {
-      setLoading(false);
+      if (!silent) setLoading(false);
       return;
     }
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({
         skip: String(page * limit),
@@ -104,23 +114,36 @@ export default function Employees() {
         if (res.status === 403) {
           localStorage.removeItem("user");
           setUser(null);
-          toast.error("Session expired. Please log in again.");
+          if (!silent) toast.error("Session expired. Please log in again.");
         } else {
-          toast.error(data.detail || "Failed to fetch employees");
+          if (!silent) toast.error(data.detail || "Failed to fetch employees");
         }
       }
     } catch (err) {
       console.error("Fetch employees error:", err);
-      toast.error("Network error");
+      if (!silent) toast.error("Network error");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   // Fetch employees whenever page, type, search, or user changes
   useEffect(() => {
-    if (user) fetchEmployees();
-  }, [page, empType, user, search]); // FIXED
+    if (user) {
+      fetchEmployees();
+      
+      // Silent fetch every 3 seconds
+      fetchIntervalRef.current = setInterval(() => {
+        fetchEmployees(true);
+      }, 3000);
+    }
+
+    return () => {
+      if (fetchIntervalRef.current) {
+        clearInterval(fetchIntervalRef.current);
+      }
+    };
+  }, [page, empType, user, search]);
 
   // Add Employee
   const handleAddEmployee = async () => {
@@ -149,6 +172,68 @@ export default function Employees() {
       }
     } catch (err) {
       console.error("Add employee error:", err);
+      toast.error("Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Edit Employee
+  const handleEditEmployee = async () => {
+    if (!editForm.name || !editForm.designation) {
+      return toast.error("Please fill all fields");
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/employees/${editForm.emp_no}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editForm.name,
+          designation: editForm.designation,
+          type: editForm.type,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        toast.success(data.message || "Employee updated successfully!");
+        setEditOpen(false);
+        await fetchEmployees();
+      } else {
+        toast.error(data.detail || "Failed to update employee");
+      }
+    } catch (err) {
+      console.error("Edit employee error:", err);
+      toast.error("Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete Employee
+  const handleDeleteEmployee = async (emp_no) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/employees/${emp_no}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        toast.success(data.message || "Employee deleted successfully!");
+        setDeleteConfirm(null);
+        await fetchEmployees();
+      } else {
+        toast.error(data.detail || "Failed to delete employee");
+      }
+    } catch (err) {
+      console.error("Delete employee error:", err);
       toast.error("Network error");
     } finally {
       setLoading(false);
@@ -193,7 +278,17 @@ export default function Employees() {
 
   // Search button
   const handleSearch = () => {
-    setPage(0); // useEffect will fetch automatically
+    setPage(0);
+  };
+
+  const openEditDialog = (emp) => {
+    setEditForm({
+      emp_no: emp.emp_no,
+      name: emp.name,
+      designation: emp.designation,
+      type: emp.type,
+    });
+    setEditOpen(true);
   };
 
   return (
@@ -213,7 +308,6 @@ export default function Employees() {
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
-            // Height Fix: Ensure container takes minimum full height and allows its own scrolling
             className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 flex flex-col w-full min-h-screen"
           >
             <Toaster position="top-right" richColors closeButton />
@@ -227,7 +321,6 @@ export default function Employees() {
               Employee Management
             </motion.h2>
 
-            {/* Header Card (Fixed Height) */}
             <Card className="w-full shadow-lg bg-white border border-gray-200 mb-6 flex-shrink-0">
               <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -254,7 +347,7 @@ export default function Employees() {
                           accept=".xlsx"
                           onChange={(e) => {
                             const selected = e.target.files?.[0];
-                            setFile(selected || null); // FIXED
+                            setFile(selected || null);
                           }}
                         />
                         <Button onClick={handleUpload} disabled={loading}>
@@ -327,7 +420,55 @@ export default function Employees() {
               </CardHeader>
             </Card>
 
-            {/* Table */}
+            {/* Edit Dialog */}
+            <Dialog open={editOpen} onOpenChange={setEditOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Edit Employee</DialogTitle>
+                </DialogHeader>
+                <div className="flex flex-col gap-3">
+                  <Input
+                    placeholder="Employee No"
+                    value={editForm.emp_no}
+                    disabled
+                    className="bg-gray-100"
+                  />
+                  <Input
+                    placeholder="Full Name"
+                    value={editForm.name}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, name: e.target.value })
+                    }
+                  />
+                  <Input
+                    placeholder="Designation"
+                    value={editForm.designation}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, designation: e.target.value })
+                    }
+                  />
+                  <select
+                    className="rounded-md border border-gray-300 p-2 text-gray-700"
+                    value={editForm.type}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, type: e.target.value })
+                    }
+                  >
+                    <option value="regular">Regular</option>
+                    <option value="apprentice">Apprentice</option>
+                  </select>
+
+                  <Button onClick={handleEditEmployee} disabled={loading}>
+                    {loading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      "Update Employee"
+                    )}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
             <Card className="flex-1 flex flex-col overflow-hidden w-full">
               <CardHeader className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 flex-shrink-0">
                 <div className="flex flex-wrap gap-2 w-full">
@@ -337,7 +478,7 @@ export default function Employees() {
                     value={search}
                     onChange={(e) => {
                       setSearch(e.target.value);
-                      setPage(0); // FIXED — search resets pagination
+                      setPage(0);
                     }}
                     onKeyPress={(e) => {
                       if (e.key === "Enter") handleSearch();
@@ -369,7 +510,7 @@ export default function Employees() {
 
               {/* Table Content */}
               <CardContent className="flex-1 overflow-y-auto p-0">
-                {loading ? (
+                {loading && employees.length === 0 ? (
                   <div className="flex justify-center items-center h-full min-h-[10rem]">
                     <Loader2 className="animate-spin h-8 w-8 text-gray-500" />
                   </div>
@@ -379,41 +520,98 @@ export default function Employees() {
                   </div>
                 ) : (
                   <motion.div layout className="overflow-x-auto w-full">
-                    <Table className="min-w-[600px] text-sm w-full">
+                    <Table className="min-w-[700px] text-sm w-full">
                       <TableHeader>
                         <TableRow className="bg-gray-100 sticky top-0">
                           <TableHead>Emp No</TableHead>
                           <TableHead>Name</TableHead>
                           <TableHead>Designation</TableHead>
                           <TableHead>Type</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
 
                       <TableBody>
-                        {employees.map((emp, idx) => (
-                          <motion.tr
-                            key={emp.emp_no || idx}
-                            layout
-                            initial={{ opacity: 0, y: 5 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: idx * 0.01 }}
-                            className="hover:bg-gray-50 border-b"
-                          >
-                            <TableCell>{emp.emp_no}</TableCell>
-                            <TableCell>{emp.name}</TableCell>
-                            <TableCell>{emp.designation}</TableCell>
-                            <TableCell className="capitalize">
-                              {emp.type}
-                            </TableCell>
-                          </motion.tr>
-                        ))}
+                        <AnimatePresence mode="popLayout">
+                          {employees.map((emp, idx) => (
+                            <motion.tr
+                              key={emp.emp_no}
+                              layout
+                              initial={{ opacity: 0, x: -20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, x: 20, height: 0 }}
+                              transition={{ 
+                                delay: idx * 0.02,
+                                layout: { duration: 0.3 }
+                              }}
+                              className="hover:bg-gray-50 border-b"
+                            >
+                              <TableCell>{emp.emp_no}</TableCell>
+                              <TableCell>{emp.name}</TableCell>
+                              <TableCell>{emp.designation}</TableCell>
+                              <TableCell className="capitalize">
+                                {emp.type}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex gap-1 justify-end">
+                                  {deleteConfirm === emp.emp_no ? (
+                                    <motion.div
+                                      initial={{ scale: 0.8, opacity: 0 }}
+                                      animate={{ scale: 1, opacity: 1 }}
+                                      className="flex gap-1 items-center"
+                                    >
+                                      <span className="text-xs text-gray-600 mr-1">
+                                        Confirm?
+                                      </span>
+                                      <Button
+                                        size="sm"
+                                        variant="destructive"
+                                        onClick={() => handleDeleteEmployee(emp.emp_no)}
+                                        disabled={loading}
+                                        className="h-7 w-7 p-0"
+                                      >
+                                        <Check className="w-3 h-3" />
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setDeleteConfirm(null)}
+                                        className="h-7 w-7 p-0"
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </Button>
+                                    </motion.div>
+                                  ) : (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => openEditDialog(emp)}
+                                        className="h-8 w-8 p-0 hover:bg-blue-50"
+                                      >
+                                        <Edit className="w-4 h-4 text-blue-600" />
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => setDeleteConfirm(emp.emp_no)}
+                                        className="h-8 w-8 p-0 hover:bg-red-50"
+                                      >
+                                        <Trash2 className="w-4 h-4 text-red-600" />
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </motion.tr>
+                          ))}
+                        </AnimatePresence>
                       </TableBody>
                     </Table>
                   </motion.div>
                 )}
               </CardContent>
 
-              {/* Pagination (Fixed Height) */}
               <div className="flex flex-col sm:flex-row justify-between items-center gap-2 p-4 border-t bg-gray-50 flex-shrink-0">
                 <div className="text-sm text-gray-600">
                   Showing {page * limit + 1}–
