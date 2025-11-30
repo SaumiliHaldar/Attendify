@@ -14,6 +14,8 @@ utc_tz = pytz.UTC
 # =========================
 DEFAULT_ADMIN_PERMISSIONS = {
     "can_add_employee": False,
+    "can_edit_employee": False,
+    "can_delete_employee": False,
     "can_add_attendance": False,
     "can_upload_excel": False,
     "can_manage_holidays": False,

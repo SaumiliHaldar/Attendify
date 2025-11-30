@@ -578,18 +578,66 @@ async def upload_employees(request: Request, file: UploadFile = File(...)):
     }
 
 
+@app.patch("/employees/{emp_no}")
+async def edit_employee(emp_no: str, payload: dict, request: Request):
+    user = await verify_session(request, sessions_collection)
+
+    # Only superadmin or admin can edit
+    if user["role"] not in ["superadmin", "admin"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Admin must have permission
+    if user["role"] == "admin":
+        permissions = user.get("permissions") or DEFAULT_ADMIN_PERMISSIONS
+        if not permissions.get("can_edit_employee", False):
+            await auto_notify(request, user["email"], f"attempted to EDIT employee {emp_no} without permission")
+            raise HTTPException(status_code=403, detail="Permission denied to edit employees")
+        # Notify admin activity
+        notify_msg = f"edited employee {emp_no}"
+
+    # Fetch employee
+    emp = await db["employees"].find_one({"emp_no": emp_no})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Only editable fields
+    editable_fields = ["name", "designation", "type"]
+    update_data = {k: v for k, v in payload.items() if k in editable_fields}
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields provided for update")
+
+    await db["employees"].update_one({"emp_no": emp_no}, {"$set": update_data})
+
+    # Only notify if admin
+    if user["role"] == "admin":
+        await auto_notify(request, user["email"], notify_msg)
+
+    return {"message": f"Employee {emp_no} updated successfully", "updated_fields": list(update_data.keys())}
+
+
 @app.delete("/employees/{emp_no}")
 async def delete_employee(emp_no: str, request: Request):
     user = await verify_session(request, sessions_collection)
-    if user["role"] != "superadmin":
-        await auto_notify(request, user["email"], f"delete employee {emp_no}")
-        raise HTTPException(status_code=403, detail="Not authorized to delete employees")
+
+    if user["role"] == "superadmin":
+        pass  # Superadmin can delete without notification
+    elif user["role"] == "admin":
+        permissions = user.get("permissions") or DEFAULT_ADMIN_PERMISSIONS
+        if not permissions.get("can_delete_employee", False):
+            await auto_notify(request, user["email"], f"attempted to DELETE employee {emp_no} without permission")
+            raise HTTPException(status_code=403, detail="Permission denied to delete employees")
+        # Notify admin activity
+        await auto_notify(request, user["email"], f"deleted employee {emp_no} successfully")
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized")
 
     result = await db["employees"].delete_one({"emp_no": emp_no})
     if not result.deleted_count:
         raise HTTPException(status_code=404, detail="Employee not found")
 
     return {"message": f"Employee {emp_no} deleted successfully"}
+
 
 @app.get("/employees")
 async def get_employees():
@@ -846,7 +894,7 @@ async def assign_shift(request: Request, data: dict):
             raise HTTPException(status_code=403, detail="Permission denied")
 
         if existing_shift:
-            await auto_notify(request, user["email"], "edit shift")
+            await auto_notify(request, user["email"], "EDIT shift")
             raise HTTPException(status_code=403, detail="Admins cannot edit shift")
 
     # ----- Step 3: Upsert shift -----
