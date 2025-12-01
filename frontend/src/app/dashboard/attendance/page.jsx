@@ -326,24 +326,24 @@ export default function AttendancePage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar
-        user={user}
-        setUser={setUser}
-        notifications={notifications}
-        setNotifications={setNotifications}
-        API_URL={API_URL}
-      />
+          <Sidebar
+            user={user}
+            setUser={setUser}
+            notifications={notifications}
+            setNotifications={setNotifications}
+            API_URL={API_URL}
+          />
 
-      {/* Main Content */}
-      <div className="flex-1 relative">
-        <AuroraBackground className="absolute inset-0 -z-10" />
-        <div className="flex-1 w-full flex flex-col overflow-y-auto">
+          {/* Main content */}
+          <div className="flex-1 w-full flex flex-col overflow-y-auto">
+        <AuroraBackground>
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
             className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 flex flex-col w-full min-h-screen"
           >
+            
             <motion.h2
               className="text-2xl sm:text-3xl font-semibold mb-6 flex-shrink-0"
               initial={{ opacity: 0, y: -10 }}
@@ -355,7 +355,7 @@ export default function AttendancePage() {
 
 
             {/* Controls */}
-            <div className="flex flex-wrap gap-3 mb-6 justify-between">
+            <div className="flex flex-col md:flex-row md:justify-between gap-3 mb-6">
               <div className="flex gap-3">
                 <Select value={empType} onValueChange={(val) => setEmpType(val)}>
                   <SelectTrigger className="w-[160px]">
@@ -376,7 +376,7 @@ export default function AttendancePage() {
                 />
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 justify-end w-full md:w-auto">
                 {(user?.role === "admin" || user?.role === "superadmin") && (
                   <Dialog open={markDialogOpen} onOpenChange={setMarkDialogOpen}>
                     <DialogTrigger asChild>
@@ -686,7 +686,7 @@ export default function AttendancePage() {
               </DialogContent>
             </Dialog>
           </motion.div>
-        </div>
+        </AuroraBackground>
       </div>
     </div>
   );
