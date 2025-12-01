@@ -326,16 +326,16 @@ export default function AttendancePage() {
 
   return (
     <div className="flex min-h-screen">
-          <Sidebar
-            user={user}
-            setUser={setUser}
-            notifications={notifications}
-            setNotifications={setNotifications}
-            API_URL={API_URL}
-          />
+      <Sidebar
+        user={user}
+        setUser={setUser}
+        notifications={notifications}
+        setNotifications={setNotifications}
+        API_URL={API_URL}
+      />
 
-          {/* Main content */}
-          <div className="flex-1 w-full flex flex-col overflow-y-auto">
+      {/* Main content */}
+      <div className="flex-1 w-full flex flex-col overflow-y-auto">
         <AuroraBackground>
           <motion.div
             initial={{ opacity: 0, y: 30 }}
@@ -343,7 +343,7 @@ export default function AttendancePage() {
             transition={{ duration: 0.6 }}
             className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 flex flex-col w-full min-h-screen"
           >
-            
+
             <motion.h2
               className="text-2xl sm:text-3xl font-semibold mb-6 flex-shrink-0"
               initial={{ opacity: 0, y: -10 }}
@@ -356,9 +356,12 @@ export default function AttendancePage() {
 
             {/* Controls */}
             <div className="flex flex-col md:flex-row md:justify-between gap-3 mb-6">
-              <div className="flex gap-3">
+              {/* Row 1: Select + Month */}
+              <div className="flex w-full gap-3">
                 <Select value={empType} onValueChange={(val) => setEmpType(val)}>
-                  <SelectTrigger className="w-[160px]">
+                  <SelectTrigger
+                    className="w-[130px] sm:w-[150px] md:w-[160px]" // slightly smaller for mobile
+                  >
                     <SelectValue placeholder="All" />
                   </SelectTrigger>
                   <SelectContent>
@@ -372,18 +375,18 @@ export default function AttendancePage() {
                   type="month"
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="w-[160px]"
+                  className="flex-1 min-w-[160px] md:w-[160px]" // full width on mobile
                 />
               </div>
 
-              <div className="flex flex-wrap gap-2 justify-end w-full md:w-auto">
-                {(user?.role === "admin" || user?.role === "superadmin") && (
-                  <Dialog open={markDialogOpen} onOpenChange={setMarkDialogOpen}>
-                    <DialogTrigger asChild>
-                      <Button className="gap-1">
-                        <Plus className="w-4 h-4" /> Mark Attendance
-                      </Button>
-                    </DialogTrigger>
+              {/* Row 2: Mark button (full width mobile) */}
+              {(user?.role === "admin" || user?.role === "superadmin") && (
+                <Dialog open={markDialogOpen} onOpenChange={setMarkDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button className="gap-1 w-full md:w-auto">   {/* <— ADDED w-full on mobile */}
+                      <Plus className="w-4 h-4" /> Mark Attendance
+                    </Button>
+                  </DialogTrigger>
                     <DialogContent className="max-w-6xl h-[90vh] overflow-hidden flex flex-col">
                       <DialogHeader>
                         <DialogTitle>Mark Attendance for {selectedMonth}</DialogTitle>
@@ -503,25 +506,31 @@ export default function AttendancePage() {
                         )}
                       </div>
                     </DialogContent>
-                  </Dialog>
-                )}
+                </Dialog>
+              )}
 
+              {/* Row 3: Export buttons (side-by-side equal width on mobile) */}
+              <div className="flex gap-2 w-full md:w-auto">
                 <Button
                   variant="outline"
                   onClick={() => handleExport("regular")}
                   disabled={loading}
+                  className="flex-1 md:flex-none"   // equal width on mobile
                 >
                   <Download className="w-4 h-4 mr-2" /> Regular
                 </Button>
+
                 <Button
                   variant="outline"
                   onClick={() => handleExport("apprentice")}
                   disabled={loading}
+                  className="flex-1 md:flex-none"   // equal width on mobile
                 >
                   <Download className="w-4 h-4 mr-2" /> Apprentice
                 </Button>
               </div>
             </div>
+
 
             {/* Table + Summary */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
