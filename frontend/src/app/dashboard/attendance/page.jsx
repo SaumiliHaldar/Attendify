@@ -332,8 +332,8 @@ export default function AttendancePage() {
         setNotifications={setNotifications}
         API_URL={API_URL}
       />
-      <AuroraBackground>
-        <div className="flex-1 w-full flex flex-col overflow-y-auto">
+      <div className="flex-1 w-full flex flex-col overflow-y-auto">
+        <AuroraBackground>
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -680,8 +680,8 @@ export default function AttendancePage() {
               </DialogContent>
             </Dialog>
           </motion.div>
-        </div>
-      </AuroraBackground>
+        </AuroraBackground>
+      </div>
     </div>
   );
 }
