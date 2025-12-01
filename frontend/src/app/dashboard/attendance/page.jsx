@@ -332,354 +332,360 @@ export default function AttendancePage() {
         setNotifications={setNotifications}
         API_URL={API_URL}
       />
-      <div className="flex-1 w-full flex flex-col overflow-y-auto">
-        <AuroraBackground>
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="max-w-7xl mx-auto"
-          >
-            <motion.h2
-              className="text-2xl sm:text-3xl font-semibold mb-6 flex-shrink-0"
-              initial={{ opacity: 0, y: -10 }}
+
+      {/* Main Content */}
+      <div className="flex-1 relative">
+        <AuroraBackground className="absolute inset-0 -z-10">
+          <div className="flex-1 w-full flex flex-col overflow-y-auto">
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
+              transition={{ duration: 0.6 }}
+              className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 flex flex-col w-full min-h-screen"
             >
-              Attendance Management
-            </motion.h2>
+              <motion.h2
+                className="text-2xl sm:text-3xl font-semibold mb-6 flex-shrink-0"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+              >
+                Attendance Management
+              </motion.h2>
 
-            {/* Controls */}
-            <div className="flex flex-wrap gap-3 mb-6 justify-between">
-              <div className="flex gap-3">
-                <Select value={empType} onValueChange={(val) => setEmpType(val)}>
-                  <SelectTrigger className="w-[160px]">
-                    <SelectValue placeholder="All" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="regular">Regular</SelectItem>
-                    <SelectItem value="apprentice">Apprentice</SelectItem>
-                  </SelectContent>
-                </Select>
 
-                <Input
-                  type="month"
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="w-[160px]"
-                />
-              </div>
+              {/* Controls */}
+              <div className="flex flex-wrap gap-3 mb-6 justify-between">
+                <div className="flex gap-3">
+                  <Select value={empType} onValueChange={(val) => setEmpType(val)}>
+                    <SelectTrigger className="w-[160px]">
+                      <SelectValue placeholder="All" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="regular">Regular</SelectItem>
+                      <SelectItem value="apprentice">Apprentice</SelectItem>
+                    </SelectContent>
+                  </Select>
 
-              <div className="flex gap-2">
-                {(user?.role === "admin" || user?.role === "superadmin") && (
-                  <Dialog open={markDialogOpen} onOpenChange={setMarkDialogOpen}>
-                    <DialogTrigger asChild>
-                      <Button className="gap-1">
-                        <Plus className="w-4 h-4" /> Mark Attendance
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="max-w-6xl h-[90vh] overflow-hidden flex flex-col">
-                      <DialogHeader>
-                        <DialogTitle>Mark Attendance for {selectedMonth}</DialogTitle>
-                      </DialogHeader>
+                  <Input
+                    type="month"
+                    value={selectedMonth}
+                    onChange={(e) => setSelectedMonth(e.target.value)}
+                    className="w-[160px]"
+                  />
+                </div>
 
-                      <div className="flex flex-col flex-1 p-4 gap-4 overflow-hidden">
-                        <div className="flex gap-3">
-                          <Input
-                            placeholder="Search employee by name or emp_no..."
-                            value={searchEmp}
-                            onChange={(e) => setSearchEmp(e.target.value)}
-                            className="flex-1"
-                          />
-                        </div>
+                <div className="flex gap-2">
+                  {(user?.role === "admin" || user?.role === "superadmin") && (
+                    <Dialog open={markDialogOpen} onOpenChange={setMarkDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button className="gap-1">
+                          <Plus className="w-4 h-4" /> Mark Attendance
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="max-w-6xl h-[90vh] overflow-hidden flex flex-col">
+                        <DialogHeader>
+                          <DialogTitle>Mark Attendance for {selectedMonth}</DialogTitle>
+                        </DialogHeader>
 
-                        <div className="border rounded-md bg-white flex-1 grid grid-cols-1 md:grid-cols-3 gap-2 p-3 overflow-y-auto">
-                          {employees
-                            .filter(
-                              (emp) =>
-                                emp.name.toLowerCase().includes(searchEmp.toLowerCase()) ||
-                                emp.emp_no.toLowerCase().includes(searchEmp.toLowerCase())
-                            )
-                            .map((emp) => (
-                              <div
-                                key={emp.emp_no}
-                                onClick={() => setSelectedEmployee(emp)}
-                                className={`p-3 cursor-pointer border rounded-md transition-colors ${selectedEmployee?.emp_no === emp.emp_no
-                                  ? "bg-blue-50 border-blue-500"
-                                  : "hover:bg-gray-100"
-                                  }`}
-                              >
-                                <div className="font-semibold text-gray-800">{emp.name}</div>
-                                <div className="text-xs text-gray-500">
-                                  {emp.emp_no} • {emp.designation} • {emp.type}
-                                </div>
-                              </div>
-                            ))}
-                        </div>
-
-                        {selectedEmployee && (
-                          <div className="border-t pt-4 flex-1 overflow-hidden flex flex-col">
-                            <h4 className="text-base font-semibold mb-2 text-gray-800">
-                              Marking for{" "}
-                              <span className="text-blue-600">
-                                {selectedEmployee.name} ({selectedEmployee.emp_no})
-                              </span>
-                            </h4>
-
-                            <div className="flex-1 grid grid-cols-7 gap-2 overflow-y-auto p-2">
-                              {(() => {
-                                const [year, month] = selectedMonth.split("-").map(Number);
-                                const totalDays = new Date(year, month, 0).getDate();
-                                const legendCodes =
-                                  selectedEmployee.type === "regular"
-                                    ? legend.regular
-                                    : legend.apprentice;
-
-                                return Array.from({ length: totalDays }, (_, i) => i + 1).map((day) => {
-                                  const uiKey = buildUiDateKey(day);
-                                  return (
-                                    <div
-                                      key={day}
-                                      className="flex flex-col items-center border rounded-md p-2 bg-white shadow-sm"
-                                    >
-                                      <span className="text-xs font-medium mb-1 text-gray-600">
-                                        Day {day}
-                                      </span>
-                                      <Select
-                                        value={attendanceRecords[uiKey] || ""}
-                                        onValueChange={(val) =>
-                                          setAttendanceRecords((prev) => ({
-                                            ...prev,
-                                            [uiKey]: val,
-                                          }))
-                                        }
-                                      >
-                                        <SelectTrigger className="h-8 text-xs w-full">
-                                          <SelectValue placeholder="-" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                          {Object.entries(legendCodes || {}).map(([code, desc]) => (
-                                            <SelectItem key={code} value={code}>
-                                              {code} – {desc}
-                                            </SelectItem>
-                                          ))}
-                                        </SelectContent>
-                                      </Select>
-                                    </div>
-                                  );
-                                });
-                              })()}
-                            </div>
-
-                            <div className="mt-4 flex justify-end gap-2">
-                              <Button
-                                variant="outline"
-                                onClick={() => {
-                                  setAttendanceRecords({});
-                                  setSelectedEmployee(null);
-                                }}
-                              >
-                                Clear
-                              </Button>
-                              <Button
-                                onClick={handleMarkAttendance}
-                                disabled={loading || Object.keys(attendanceRecords).length === 0}
-                                className="px-8"
-                              >
-                                {loading ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  `Submit (${Object.keys(attendanceRecords).length} days)`
-                                )}
-                              </Button>
-                            </div>
+                        <div className="flex flex-col flex-1 p-4 gap-4 overflow-hidden">
+                          <div className="flex gap-3">
+                            <Input
+                              placeholder="Search employee by name or emp_no..."
+                              value={searchEmp}
+                              onChange={(e) => setSearchEmp(e.target.value)}
+                              className="flex-1"
+                            />
                           </div>
-                        )}
-                      </div>
-                    </DialogContent>
-                  </Dialog>
-                )}
 
-                <Button
-                  variant="outline"
-                  onClick={() => handleExport("regular")}
-                  disabled={loading}
-                >
-                  <Download className="w-4 h-4 mr-2" /> Regular
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => handleExport("apprentice")}
-                  disabled={loading}
-                >
-                  <Download className="w-4 h-4 mr-2" /> Apprentice
-                </Button>
-              </div>
-            </div>
+                          <div className="border rounded-md bg-white flex-1 grid grid-cols-1 md:grid-cols-3 gap-2 p-3 overflow-y-auto">
+                            {employees
+                              .filter(
+                                (emp) =>
+                                  emp.name.toLowerCase().includes(searchEmp.toLowerCase()) ||
+                                  emp.emp_no.toLowerCase().includes(searchEmp.toLowerCase())
+                              )
+                              .map((emp) => (
+                                <div
+                                  key={emp.emp_no}
+                                  onClick={() => setSelectedEmployee(emp)}
+                                  className={`p-3 cursor-pointer border rounded-md transition-colors ${selectedEmployee?.emp_no === emp.emp_no
+                                    ? "bg-blue-50 border-blue-500"
+                                    : "hover:bg-gray-100"
+                                    }`}
+                                >
+                                  <div className="font-semibold text-gray-800">{emp.name}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {emp.emp_no} • {emp.designation} • {emp.type}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
 
-            {/* Table + Summary */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {/* Table */}
-              <div className="lg:col-span-2 bg-white rounded-lg shadow-sm flex flex-col">
-                <div className="px-4 py-3 border-b flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-gray-700">
-                    Employee Attendance
-                  </h3>
+                          {selectedEmployee && (
+                            <div className="border-t pt-4 flex-1 overflow-hidden flex flex-col">
+                              <h4 className="text-base font-semibold mb-2 text-gray-800">
+                                Marking for{" "}
+                                <span className="text-blue-600">
+                                  {selectedEmployee.name} ({selectedEmployee.emp_no})
+                                </span>
+                              </h4>
+
+                              <div className="flex-1 grid grid-cols-7 gap-2 overflow-y-auto p-2">
+                                {(() => {
+                                  const [year, month] = selectedMonth.split("-").map(Number);
+                                  const totalDays = new Date(year, month, 0).getDate();
+                                  const legendCodes =
+                                    selectedEmployee.type === "regular"
+                                      ? legend.regular
+                                      : legend.apprentice;
+
+                                  return Array.from({ length: totalDays }, (_, i) => i + 1).map((day) => {
+                                    const uiKey = buildUiDateKey(day);
+                                    return (
+                                      <div
+                                        key={day}
+                                        className="flex flex-col items-center border rounded-md p-2 bg-white shadow-sm"
+                                      >
+                                        <span className="text-xs font-medium mb-1 text-gray-600">
+                                          Day {day}
+                                        </span>
+                                        <Select
+                                          value={attendanceRecords[uiKey] || ""}
+                                          onValueChange={(val) =>
+                                            setAttendanceRecords((prev) => ({
+                                              ...prev,
+                                              [uiKey]: val,
+                                            }))
+                                          }
+                                        >
+                                          <SelectTrigger className="h-8 text-xs w-full">
+                                            <SelectValue placeholder="-" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {Object.entries(legendCodes || {}).map(([code, desc]) => (
+                                              <SelectItem key={code} value={code}>
+                                                {code} – {desc}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+                                    );
+                                  });
+                                })()}
+                              </div>
+
+                              <div className="mt-4 flex justify-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  onClick={() => {
+                                    setAttendanceRecords({});
+                                    setSelectedEmployee(null);
+                                  }}
+                                >
+                                  Clear
+                                </Button>
+                                <Button
+                                  onClick={handleMarkAttendance}
+                                  disabled={loading || Object.keys(attendanceRecords).length === 0}
+                                  className="px-8"
+                                >
+                                  {loading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    `Submit (${Object.keys(attendanceRecords).length} days)`
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  )}
+
                   <Button
                     variant="outline"
-                    size="sm"
-                    onClick={fetchAttendance}
+                    onClick={() => handleExport("regular")}
                     disabled={loading}
                   >
-                    {loading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      "Refresh"
-                    )}
+                    <Download className="w-4 h-4 mr-2" /> Regular
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => handleExport("apprentice")}
+                    disabled={loading}
+                  >
+                    <Download className="w-4 h-4 mr-2" /> Apprentice
                   </Button>
                 </div>
+              </div>
 
-                <div className="flex-1 overflow-y-auto max-h-[600px]">
-                  {loading ? (
-                    <div className="flex justify-center items-center h-64">
-                      <Loader2 className="animate-spin h-8 w-8 text-gray-500" />
-                    </div>
-                  ) : attendanceData.length === 0 ? (
-                    <div className="flex flex-col justify-center items-center h-64 text-gray-500">
-                      <ClipboardList className="w-10 h-10 mb-2" />
-                      No attendance records found
-                    </div>
-                  ) : (
-                    <Table className="text-sm">
-                      <TableHeader>
-                        <TableRow className="bg-gray-50">
-                          <TableHead>Emp No</TableHead>
-                          <TableHead>Name</TableHead>
-                          <TableHead>Type</TableHead>
-                          <TableHead>Days</TableHead>
-                          <TableHead>Summary</TableHead>
-                          <TableHead>View</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {attendanceData.map((row) => (
-                          <TableRow key={row.emp_no}>
-                            <TableCell>{row.emp_no}</TableCell>
-                            <TableCell>{row.emp_name}</TableCell>
-                            <TableCell className="capitalize">{row.type}</TableCell>
-                            <TableCell>{row.summary?.total_days || 0}</TableCell>
-                            <TableCell>
-                              <div className="flex flex-wrap gap-1">
-                                {Object.entries(row.summary || {})
-                                  .filter(([code]) => code !== "total_days")
-                                  .map(([code, count]) => (
-                                    <span
-                                      key={code}
-                                      className="inline-block bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md text-xs"
-                                    >
-                                      {code}:{count}
-                                    </span>
-                                  ))}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleViewEmployee(row)}
-                              >
-                                <Eye className="w-4 h-4" />
-                              </Button>
-                            </TableCell>
+              {/* Table + Summary */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Table */}
+                <div className="lg:col-span-2 bg-white rounded-lg shadow-sm flex flex-col">
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-gray-700">
+                      Employee Attendance
+                    </h3>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={fetchAttendance}
+                      disabled={loading}
+                    >
+                      {loading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        "Refresh"
+                      )}
+                    </Button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto max-h-[600px]">
+                    {loading ? (
+                      <div className="flex justify-center items-center h-64">
+                        <Loader2 className="animate-spin h-8 w-8 text-gray-500" />
+                      </div>
+                    ) : attendanceData.length === 0 ? (
+                      <div className="flex flex-col justify-center items-center h-64 text-gray-500">
+                        <ClipboardList className="w-10 h-10 mb-2" />
+                        No attendance records found
+                      </div>
+                    ) : (
+                      <Table className="text-sm">
+                        <TableHeader>
+                          <TableRow className="bg-gray-50">
+                            <TableHead>Emp No</TableHead>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Days</TableHead>
+                            <TableHead>Summary</TableHead>
+                            <TableHead>View</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </div>
-              </div>
-
-              {/* Summary Card */}
-              <div className="bg-white rounded-lg shadow-sm flex flex-col">
-                <div className="px-4 py-3 border-b">
-                  <h3 className="text-lg font-semibold text-gray-700">
-                    Monthly Summary
-                  </h3>
-                </div>
-                <div className="flex-1 p-4">
-                  {pieData.length === 0 ? (
-                    <div className="text-gray-400 text-sm text-center">No data</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {pieData.map((item, idx) => (
-                        <div key={idx} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                          <span className="font-medium text-gray-700">{item.code}</span>
-                          <span className="text-gray-600">{item.count} days</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* View Dialog */}
-            <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-              <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
-                <DialogHeader>
-                  <DialogTitle>
-                    {viewEmployee?.emp_name} ({viewEmployee?.emp_no}) - {selectedMonth}
-                  </DialogTitle>
-                </DialogHeader>
-                <div className="flex-1 overflow-y-auto p-4">
-                  {viewEmployee ? (
-                    <>
-                      <div className="mb-4">
-                        <h4 className="font-semibold mb-2">Summary</h4>
-                        <div className="flex flex-wrap gap-2">
-                          {Object.entries(viewEmployee.summary || {}).map(([code, count]) => (
-                            <span
-                              key={code}
-                              className="bg-gray-100 px-3 py-1 rounded-md text-sm"
-                            >
-                              {code}: {count}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <h4 className="font-semibold mb-2">Daily Records</h4>
-                        <div className="grid grid-cols-7 gap-2">
-                          {Object.entries(viewEmployee.attendance || {})
-                            .sort((a, b) => {
-                              const [d1, m1, y1] = a[0].split("-");
-                              const [d2, m2, y2] = b[0].split("-");
-                              return new Date(y1, m1 - 1, d1) - new Date(y2, m2 - 1, d2);
-                            })
-                            .map(([date, code]) => (
-                              <div
-                                key={date}
-                                className="border rounded p-2 text-center text-sm"
-                              >
-                                <div className="text-xs text-gray-500 mb-1">
-                                  {date.split("-")[0]}
+                        </TableHeader>
+                        <TableBody>
+                          {attendanceData.map((row) => (
+                            <TableRow key={row.emp_no}>
+                              <TableCell>{row.emp_no}</TableCell>
+                              <TableCell>{row.emp_name}</TableCell>
+                              <TableCell className="capitalize">{row.type}</TableCell>
+                              <TableCell>{row.summary?.total_days || 0}</TableCell>
+                              <TableCell>
+                                <div className="flex flex-wrap gap-1">
+                                  {Object.entries(row.summary || {})
+                                    .filter(([code]) => code !== "total_days")
+                                    .map(([code, count]) => (
+                                      <span
+                                        key={code}
+                                        className="inline-block bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md text-xs"
+                                      >
+                                        {code}:{count}
+                                      </span>
+                                    ))}
                                 </div>
-                                <div className="font-semibold">{code}</div>
-                              </div>
-                            ))}
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex justify-center items-center h-64">
-                      <Loader2 className="animate-spin h-8 w-8" />
-                    </div>
-                  )}
+                              </TableCell>
+                              <TableCell>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleViewEmployee(row)}
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
                 </div>
-              </DialogContent>
-            </Dialog>
-          </motion.div>
+
+                {/* Summary Card */}
+                <div className="bg-white rounded-lg shadow-sm flex flex-col">
+                  <div className="px-4 py-3 border-b">
+                    <h3 className="text-lg font-semibold text-gray-700">
+                      Monthly Summary
+                    </h3>
+                  </div>
+                  <div className="flex-1 p-4">
+                    {pieData.length === 0 ? (
+                      <div className="text-gray-400 text-sm text-center">No data</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {pieData.map((item, idx) => (
+                          <div key={idx} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                            <span className="font-medium text-gray-700">{item.code}</span>
+                            <span className="text-gray-600">{item.count} days</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* View Dialog */}
+              <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
+                <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+                  <DialogHeader>
+                    <DialogTitle>
+                      {viewEmployee?.emp_name} ({viewEmployee?.emp_no}) - {selectedMonth}
+                    </DialogTitle>
+                  </DialogHeader>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    {viewEmployee ? (
+                      <>
+                        <div className="mb-4">
+                          <h4 className="font-semibold mb-2">Summary</h4>
+                          <div className="flex flex-wrap gap-2">
+                            {Object.entries(viewEmployee.summary || {}).map(([code, count]) => (
+                              <span
+                                key={code}
+                                className="bg-gray-100 px-3 py-1 rounded-md text-sm"
+                              >
+                                {code}: {count}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold mb-2">Daily Records</h4>
+                          <div className="grid grid-cols-7 gap-2">
+                            {Object.entries(viewEmployee.attendance || {})
+                              .sort((a, b) => {
+                                const [d1, m1, y1] = a[0].split("-");
+                                const [d2, m2, y2] = b[0].split("-");
+                                return new Date(y1, m1 - 1, d1) - new Date(y2, m2 - 1, d2);
+                              })
+                              .map(([date, code]) => (
+                                <div
+                                  key={date}
+                                  className="border rounded p-2 text-center text-sm"
+                                >
+                                  <div className="text-xs text-gray-500 mb-1">
+                                    {date.split("-")[0]}
+                                  </div>
+                                  <div className="font-semibold">{code}</div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex justify-center items-center h-64">
+                        <Loader2 className="animate-spin h-8 w-8" />
+                      </div>
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </motion.div>
+          </div>
         </AuroraBackground>
       </div>
     </div>
