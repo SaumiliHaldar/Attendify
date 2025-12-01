@@ -39,7 +39,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-export default function AttendancePage() {
+export default function Attendance() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
   const [employees, setEmployees] = useState([]);
@@ -387,125 +387,144 @@ export default function AttendancePage() {
                       <Plus className="w-4 h-4" /> Mark Attendance
                     </Button>
                   </DialogTrigger>
-                    <DialogContent className="max-w-6xl h-[90vh] overflow-hidden flex flex-col">
-                      <DialogHeader>
-                        <DialogTitle>Mark Attendance for {selectedMonth}</DialogTitle>
-                      </DialogHeader>
+                  <DialogContent className="max-w-6xl h-[90vh] overflow-hidden flex flex-col">
+                    <DialogHeader>
+                      <DialogTitle>Mark Attendance for {selectedMonth}</DialogTitle>
+                    </DialogHeader>
 
-                      <div className="flex flex-col flex-1 p-4 gap-4 overflow-hidden">
-                        <div className="flex gap-3">
-                          <Input
-                            placeholder="Search employee by name or emp_no..."
-                            value={searchEmp}
-                            onChange={(e) => setSearchEmp(e.target.value)}
-                            className="flex-1"
-                          />
-                        </div>
-
-                        <div className="border rounded-md bg-white flex-1 grid grid-cols-1 md:grid-cols-3 gap-2 p-3 overflow-y-auto">
-                          {employees
-                            .filter(
-                              (emp) =>
-                                emp.name.toLowerCase().includes(searchEmp.toLowerCase()) ||
-                                emp.emp_no.toLowerCase().includes(searchEmp.toLowerCase())
-                            )
-                            .map((emp) => (
-                              <div
-                                key={emp.emp_no}
-                                onClick={() => setSelectedEmployee(emp)}
-                                className={`p-3 cursor-pointer border rounded-md transition-colors ${selectedEmployee?.emp_no === emp.emp_no
-                                  ? "bg-blue-50 border-blue-500"
-                                  : "hover:bg-gray-100"
-                                  }`}
-                              >
-                                <div className="font-semibold text-gray-800">{emp.name}</div>
-                                <div className="text-xs text-gray-500">
-                                  {emp.emp_no} • {emp.designation} • {emp.type}
-                                </div>
-                              </div>
-                            ))}
-                        </div>
-
-                        {selectedEmployee && (
-                          <div className="border-t pt-4 flex-1 overflow-hidden flex flex-col">
-                            <h4 className="text-base font-semibold mb-2 text-gray-800">
-                              Marking for{" "}
-                              <span className="text-blue-600">
-                                {selectedEmployee.name} ({selectedEmployee.emp_no})
-                              </span>
-                            </h4>
-
-                            <div className="flex-1 grid grid-cols-7 gap-2 overflow-y-auto p-2">
-                              {(() => {
-                                const [year, month] = selectedMonth.split("-").map(Number);
-                                const totalDays = new Date(year, month, 0).getDate();
-                                const legendCodes =
-                                  selectedEmployee.type === "regular"
-                                    ? legend.regular
-                                    : legend.apprentice;
-
-                                return Array.from({ length: totalDays }, (_, i) => i + 1).map((day) => {
-                                  const uiKey = buildUiDateKey(day);
-                                  return (
-                                    <div
-                                      key={day}
-                                      className="flex flex-col items-center border rounded-md p-2 bg-white shadow-sm"
-                                    >
-                                      <span className="text-xs font-medium mb-1 text-gray-600">
-                                        Day {day}
-                                      </span>
-                                      <Select
-                                        value={attendanceRecords[uiKey] || ""}
-                                        onValueChange={(val) =>
-                                          setAttendanceRecords((prev) => ({
-                                            ...prev,
-                                            [uiKey]: val,
-                                          }))
-                                        }
-                                      >
-                                        <SelectTrigger className="h-8 text-xs w-full">
-                                          <SelectValue placeholder="-" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                          {Object.entries(legendCodes || {}).map(([code, desc]) => (
-                                            <SelectItem key={code} value={code}>
-                                              {code} – {desc}
-                                            </SelectItem>
-                                          ))}
-                                        </SelectContent>
-                                      </Select>
-                                    </div>
-                                  );
-                                });
-                              })()}
-                            </div>
-
-                            <div className="mt-4 flex justify-end gap-2">
-                              <Button
-                                variant="outline"
-                                onClick={() => {
-                                  setAttendanceRecords({});
-                                  setSelectedEmployee(null);
-                                }}
-                              >
-                                Clear
-                              </Button>
-                              <Button
-                                onClick={handleMarkAttendance}
-                                disabled={loading || Object.keys(attendanceRecords).length === 0}
-                                className="px-8"
-                              >
-                                {loading ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  `Submit (${Object.keys(attendanceRecords).length} days)`
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                        )}
+                    <div className="flex flex-col flex-1 p-4 gap-4 overflow-hidden">
+                      <div className="flex gap-3">
+                        <Input
+                          placeholder="Search employee by name or emp_no..."
+                          value={searchEmp}
+                          onChange={(e) => setSearchEmp(e.target.value)}
+                          className="flex-1"
+                        />
                       </div>
-                    </DialogContent>
+
+                      <div className="border rounded-md bg-white flex-1 grid grid-cols-1 md:grid-cols-3 gap-2 p-3 overflow-y-auto">
+                        {employees
+                          .filter(
+                            (emp) =>
+                              emp.name.toLowerCase().includes(searchEmp.toLowerCase()) ||
+                              emp.emp_no.toLowerCase().includes(searchEmp.toLowerCase())
+                          )
+                          .map((emp) => (
+                            <div
+                              key={emp.emp_no}
+                              onClick={async () => {
+                                setSelectedEmployee(emp);
+                                // Fetch employee existing attendance and load into UI
+                                const res = await fetch(`${API_URL}/attendance/${emp.emp_no}?month=${selectedMonth}`, {
+                                  credentials: "include"
+                                });
+                                const data = await res.json();
+                                if (res.ok && data.attendance) {
+                                  const mapped = {};
+                                  for (const [backendDate, code] of Object.entries(data.attendance)) {
+                                    const [dd, mm, yyyy] = backendDate.split("-");
+                                    const uiKey = `${dd}-${mm}-${yyyy}`; // UI format
+                                    mapped[uiKey] = code;
+                                  }
+                                  setAttendanceRecords(mapped);
+                                } else {
+                                  setAttendanceRecords({});
+                                }
+                              }}
+
+                              className={`p-3 cursor-pointer border rounded-md transition-colors ${selectedEmployee?.emp_no === emp.emp_no
+                                ? "bg-blue-50 border-blue-500"
+                                : "hover:bg-gray-100"
+                                }`}
+                            >
+                              <div className="font-semibold text-gray-800">{emp.name}</div>
+                              <div className="text-xs text-gray-500">
+                                {emp.emp_no} • {emp.designation} • {emp.type}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+
+                      {selectedEmployee && (
+                        <div className="border-t pt-4 flex-1 overflow-hidden flex flex-col">
+                          <h4 className="text-base font-semibold mb-2 text-gray-800">
+                            Marking for{" "}
+                            <span className="text-blue-600">
+                              {selectedEmployee.name} ({selectedEmployee.emp_no})
+                            </span>
+                          </h4>
+
+                          <div className="flex-1 grid grid-cols-7 gap-2 overflow-y-auto p-2">
+                            {(() => {
+                              const [year, month] = selectedMonth.split("-").map(Number);
+                              const totalDays = new Date(year, month, 0).getDate();
+                              const legendCodes =
+                                selectedEmployee.type === "regular"
+                                  ? legend.regular
+                                  : legend.apprentice;
+
+                              return Array.from({ length: totalDays }, (_, i) => i + 1).map((day) => {
+                                const uiKey = buildUiDateKey(day);
+                                return (
+                                  <div
+                                    key={day}
+                                    className="flex flex-col items-center border rounded-md p-2 bg-white shadow-sm"
+                                  >
+                                    <span className="text-xs font-medium mb-1 text-gray-600">
+                                      Day {day}
+                                    </span>
+                                    <Select
+                                      value={attendanceRecords[uiKey] || ""}
+                                      onValueChange={(val) =>
+                                        setAttendanceRecords((prev) => ({
+                                          ...prev,
+                                          [uiKey]: val,
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger className="h-8 text-xs w-full">
+                                        <SelectValue placeholder="-" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {Object.entries(legendCodes || {}).map(([code, desc]) => (
+                                          <SelectItem key={code} value={code}>
+                                            {code} – {desc}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                );
+                              });
+                            })()}
+                          </div>
+
+                          <div className="mt-4 flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              onClick={() => {
+                                setAttendanceRecords({});
+                                setSelectedEmployee(null);
+                              }}
+                            >
+                              Clear
+                            </Button>
+                            <Button
+                              onClick={handleMarkAttendance}
+                              disabled={loading || Object.keys(attendanceRecords).length === 0}
+                              className="px-8"
+                            >
+                              {loading ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                `Submit (${Object.keys(attendanceRecords).length} days)`
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </DialogContent>
                 </Dialog>
               )}
 
