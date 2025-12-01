@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Response, UploadFile, File
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Response, UploadFile, File, Query
 from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1027,6 +1027,99 @@ async def add_attendance(request: Request, data: dict):
         "message": f"Attendance added for {emp['emp_no']} - {emp['name']} on {data['date']}",
         "updated": existing is not None,
         "added": existing is None
+    }
+
+
+# Daily attendance summary for all employees
+@app.get("/attendance/daily_summary")
+async def get_daily_summary(date: str, request: Request):
+    await verify_session(request, sessions_collection)
+
+    try:
+        date_obj = datetime.strptime(date, "%Y-%m-%d")
+        date_key = date_obj.strftime("%d-%m-%Y")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    cursor = db["attendance"].find({f"attendance.{date_key}": {"$exists": True}})
+
+    code_counts = defaultdict(int)
+    total_marked = 0
+
+    async for record in cursor:
+        total_marked += 1
+        status = record["attendance"].get(date_key, "")
+        code = status.split("/")[0] if "/" in status else status
+        code_counts[code] += 1
+
+    return {
+        "date": date,
+        "total_marked": total_marked,
+        "breakdown": dict(code_counts) 
+    }
+
+
+# Monthly attendance summary for all employees
+@app.get("/attendance/monthly")
+async def get_monthly_attendance(month: str, request: Request):
+    await verify_session(request, sessions_collection)
+    cursor = db["attendance"].find({"month": month})
+    result = []
+
+    async for record in cursor:
+        attendance = record.get("attendance", {})
+        total_days = len(attendance)
+        code_counts = defaultdict(int)
+        for status in attendance.values():
+            code = status.split("/")[0] if "/" in status else status
+            code_counts[code] += 1
+
+        summary = {
+            "total_days": total_days,
+            **code_counts  # dynamically include all codes
+        }
+
+        result.append({
+            "emp_no": record["emp_no"],
+            "emp_name": record.get("emp_name"),
+            "type": record.get("type"),
+            "attendance": attendance,
+            "summary": dict(summary)
+        })
+
+    return {"month": month, "employees": result, "total_employees": len(result)}
+
+
+# Attendance summary for a specific employee
+@app.get("/attendance/{emp_no}")
+async def get_employee_attendance(emp_no: str, month: str, request: Request):
+    await verify_session(request, sessions_collection)
+
+    emp_no_clean = str(emp_no).split(".")[0]
+    record = await db["attendance"].find_one({"emp_no": emp_no_clean, "month": month})
+
+    if not record:
+        return {"emp_no": emp_no_clean, "month": month, "attendance": {}, "summary": {}}
+
+    attendance = record.get("attendance", {})
+    total_days = len(attendance)
+    code_counts = defaultdict(int)
+    for status in attendance.values():
+        code = status.split("/")[0] if "/" in status else status
+        code_counts[code] += 1
+
+    summary = {
+        "total_days": total_days,
+        **code_counts  # dynamically include all codes
+    }
+
+    return {
+        "emp_no": emp_no_clean,
+        "emp_name": record.get("emp_name"),
+        "type": record.get("type"),
+        "month": month,
+        "attendance": attendance,
+        "summary": dict(summary)
     }
 
 
