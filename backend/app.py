@@ -959,6 +959,45 @@ async def assign_shift(request: Request, data: dict):
     }
 
 
+@app.get("/shift")
+async def get_shifts(
+    request: Request,
+    date: str = None,           # optional filter by date YYYY-MM-DD
+    emp_no: str = None,         # optional filter by employee number
+    skip: int = 0,
+    limit: int = 50
+):
+    """
+    Fetch shifts. Can filter by date or employee number.
+    """
+    await verify_session(request, sessions_collection)
+
+    query = {}
+
+    if date:
+        query["date"] = date
+
+    if emp_no:
+        query["emp_no"] = str(emp_no).split(".")[0]
+
+    total = await db["shifts"].count_documents(query)
+
+    cursor = db["shifts"].find(query).sort("date", 1).skip(skip).limit(limit)
+    shifts = await cursor.to_list(length=limit)
+
+    # Convert ObjectId to string
+    for s in shifts:
+        s["_id"] = str(s["_id"])
+
+    return {
+        "shifts": shifts,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "page": skip // limit
+    }
+
+
 # ===================================
 # ATTENDANCE
 # ===================================
