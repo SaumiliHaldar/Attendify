@@ -375,7 +375,7 @@ export default function Attendance() {
                   type="month"
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="flex-1 min-w-[160px] md:w-[160px]" // full width on mobile
+                  className="w-full min-w-[160px] md:w-[160px] lg:w-[120px]" // responsive widths
                 />
               </div>
 
