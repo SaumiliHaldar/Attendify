@@ -92,9 +92,10 @@ export default function Employees() {
       const params = new URLSearchParams({
         skip: String(page * limit),
         limit: String(limit),
-        search: search.trim(),
-        emp_type: empType === "all" ? "" : empType.toLowerCase(),
       });
+      if (search.trim()) params.append("search", search.trim());
+      if (empType !== "all") params.append("emp_type", empType.toLowerCase());
+
 
       const res = await fetch(`${API_URL}/employees?${params.toString()}`, {
         credentials: "include",
@@ -137,8 +138,11 @@ export default function Employees() {
 
       // Silent fetch every 3 seconds
       fetchIntervalRef.current = setInterval(() => {
-        fetchEmployees(true);
+        if (!addOpen && !editOpen && !uploadOpen && deleteConfirm === null) {
+          fetchEmployees(true);
+        }
       }, 3000);
+
     }
 
     return () => {
@@ -146,7 +150,7 @@ export default function Employees() {
         clearInterval(fetchIntervalRef.current);
       }
     };
-  }, [page, empType, user, search]);
+  }, [page, empType, user, search, addOpen, editOpen, uploadOpen, deleteConfirm]);
 
   // Add Employee
   const handleAddEmployee = async () => {
@@ -230,8 +234,11 @@ export default function Employees() {
 
       if (res.ok) {
         toast.success(data.message || "Employee deleted successfully!");
+        setEmployees(prev => prev.filter(e => e.emp_no !== emp_no));
+        setTotal(prev => prev - 1);
         setDeleteConfirm(null);
-        await fetchEmployees();
+        fetchEmployees(true); // silent background refresh
+
       } else {
         toast.error(data.detail || "Failed to delete employee");
       }
