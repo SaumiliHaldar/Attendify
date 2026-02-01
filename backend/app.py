@@ -305,7 +305,7 @@ async def login_with_google():
     return RedirectResponse(url=google_auth_url)
 
 @app.get("/auth/google/callback")
-async def google_callback(request: Request, response: Response):
+async def google_callback(request: Request):
     """Handle Google OAuth callback: exchange code for token, fetch user, create session."""
     code = request.query_params.get("code")
     error = request.query_params.get("error")
@@ -387,18 +387,26 @@ async def google_callback(request: Request, response: Response):
         logger.error(f"[SESSION] Creation failed: {e}")
         raise HTTPException(status_code=500, detail="Session creation failed")
 
-    # --- Redirect to frontend with session info ---
+    # --- Redirect to frontend with session cookie ---
     if not FRONTEND_URL:
         raise HTTPException(status_code=500, detail="FRONTEND_URL not configured")
 
-    redirect_url = f"{FRONTEND_URL}"
+    response = RedirectResponse(url=FRONTEND_URL)
+    response.set_cookie(
+        key="session_id",
+        value=session_id,
+        httponly=True,       # cannot be accessed by JS
+        secure=True,         # HTTPS only (set False if testing locally)
+        samesite="lax",      # adjust to 'none' if cross-site with HTTPS
+        max_age=7*24*3600    # 1 week
+    )
 
     logger.info(f"[LOGIN] Redirecting {user_email} to frontend")
+    return response
 
-    return RedirectResponse(url=redirect_url)
 
 @app.post("/logout")
-async def logout(request: Request):
+async def logout(request: Request, response: Response):
     """Delete session and logout."""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -406,6 +414,7 @@ async def logout(request: Request):
 
     session_id = auth_header.split(" ")[1]
     await delete_session(sessions_collection, session_id)
+    response.delete_cookie("session_id")
     return {"message": "Logged out successfully"}
 
 # ===================================
